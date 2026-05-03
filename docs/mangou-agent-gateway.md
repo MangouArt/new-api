@@ -87,6 +87,7 @@ Initial config source:
 
 ```text
 MANGOU_PROVIDER_PRICING
+MANGOU_PROVIDER_PRICING_B64
 ```
 
 JSON shape:
@@ -125,6 +126,8 @@ JSON shape:
 ```
 
 Later this can move from env to NewAPI options/admin UI without changing the public agent API.
+
+`MANGOU_PROVIDER_PRICING_B64` accepts the same JSON after base64 encoding. Prefer it on platforms whose env CLI has trouble with commas or nested JSON.
 
 ## Agent Registration
 
@@ -176,3 +179,29 @@ Server behavior:
 - Implement local async task creation and pricing calculation.
 - Add routes.
 - Keep upstream HTTP submission as the next milestone, implemented through provider-specific `TaskAdaptor`s.
+
+## Provider Runtime
+
+The first provider runtime uses direct HTTP task submission from the agent task controller:
+
+- `evolink`: unified async API, `POST /v1/images/generations`, `POST /v1/videos/generations`, `GET /v1/tasks/{task_id}`.
+- `bltai`: treated as the same unified async API. `BLTAI_BASE_URL` may already include `/v1`.
+- `kie`: Runway video API, `POST /api/v1/runway/generate`, `GET /api/v1/runway/record-detail?taskId=...`.
+
+Required env vars:
+
+```text
+EVOLINK_API_KEY
+BLTAI_API_KEY
+BLTAI_BASE_URL
+KIE_API_KEY
+```
+
+Optional env vars:
+
+```text
+EVOLINK_BASE_URL=https://api.evolink.ai
+KIE_BASE_URL=https://api.kie.ai
+```
+
+If a provider key is missing, NewAPI still creates the local async task and pre-consumes quota, but it does not submit to the upstream runtime. This keeps local development and pricing tests independent from external providers.

@@ -197,3 +197,143 @@ func TestMangouProviderPricingConfigDoesNotReadStaleEnv(t *testing.T) {
 
 	_ = os.Unsetenv("MANGOU_PROVIDER_PRICING")
 }
+
+func TestMangouProviderPricingConfigSupportsBase64Env(t *testing.T) {
+	t.Setenv("MANGOU_PROVIDER_PRICING", "")
+	t.Setenv("MANGOU_PROVIDER_PRICING_B64", "eyJibHRhaSI6eyJpbWFnZSI6eyJiYXNlX3F1b3RhIjoxMDB9fX0=")
+
+	pricing, err := loadMangouProviderPricing()
+	require.NoError(t, err)
+	require.Equal(t, 100, pricing["bltai"]["image"].BaseQuota)
+}
+
+func TestMangouAgentSubmitTaskSubmitsUnifiedProviderTask(t *testing.T) {
+	db := setupMangouAgentTestDB(t)
+	t.Setenv("MANGOU_PROVIDER_PRICING", `{"evolink":{"image":{"base_quota":100}}}`)
+	t.Setenv("EVOLINK_API_KEY", "test-evolink-key")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "Bearer test-evolink-key", r.Header.Get("Authorization"))
+		switch r.URL.Path {
+		case "/v1/images/generations":
+			require.Equal(t, http.MethodPost, r.Method)
+			var payload map[string]any
+			require.NoError(t, common.DecodeJson(r.Body, &payload))
+			require.Equal(t, "gemini-3.1-flash-image-preview", payload["model"])
+			require.Equal(t, "A mango robot.", payload["prompt"])
+			require.Equal(t, "16:9", payload["aspect_ratio"])
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"remote-image-task","status":"pending","progress":0,"type":"image","model":"gemini-3.1-flash-image-preview"}`))
+		case "/v1/tasks/remote-image-task":
+			require.Equal(t, http.MethodGet, r.Method)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"remote-image-task","status":"completed","progress":100,"results":["https://cdn.example/image.png"],"type":"image","model":"gemini-3.1-flash-image-preview"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("EVOLINK_BASE_URL", server.URL)
+
+	user := model.User{Username: "agentuser", Role: common.RoleCommonUser, Status: common.UserStatusEnabled, Quota: 1000, Group: "default"}
+	require.NoError(t, db.Create(&user).Error)
+
+	ctx, recorder := newMangouJSONContext(t, http.MethodPost, "/v1/agent/tasks", map[string]any{
+		"type":     "image",
+		"provider": "evolink",
+		"model":    "gemini-3.1-flash-image-preview",
+		"prompt":   "A mango robot.",
+		"params": map[string]any{
+			"aspect_ratio": "16:9",
+		},
+	})
+	ctx.Set("id", user.Id)
+	ctx.Set("token_unlimited_quota", true)
+
+	MangouAgentSubmitTask(ctx)
+	require.Equal(t, http.StatusOK, recorder.Code)
+	resp := decodeMangouResponse(t, recorder)
+	require.Equal(t, true, resp["success"])
+	data := resp["data"].(map[string]any)
+
+	var task model.Task
+	require.NoError(t, db.Where("task_id = ?", data["task_id"]).First(&task).Error)
+	require.Equal(t, "remote-image-task", task.PrivateData.UpstreamTaskID)
+
+	getCtx, getRecorder := newMangouJSONContext(t, http.MethodGet, "/v1/agent/tasks/"+task.TaskID, nil)
+	getCtx.Params = gin.Params{{Key: "task_id", Value: task.TaskID}}
+	getCtx.Set("id", user.Id)
+	MangouAgentGetTask(getCtx)
+
+	require.Equal(t, http.StatusOK, getRecorder.Code)
+	getResp := decodeMangouResponse(t, getRecorder)
+	require.Equal(t, true, getResp["success"])
+	getData := getResp["data"].(map[string]any)
+	require.Equal(t, "completed", getData["status"])
+	require.Equal(t, "https://cdn.example/image.png", getData["result_url"])
+}
+
+func TestMangouAgentSubmitTaskSubmitsKIERunwayVideoTask(t *testing.T) {
+	db := setupMangouAgentTestDB(t)
+	t.Setenv("MANGOU_PROVIDER_PRICING", `{"kie":{"video":{"base_quota":200}}}`)
+	t.Setenv("KIE_API_KEY", "test-kie-key")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "Bearer test-kie-key", r.Header.Get("Authorization"))
+		switch r.URL.Path {
+		case "/api/v1/runway/generate":
+			require.Equal(t, http.MethodPost, r.Method)
+			var payload map[string]any
+			require.NoError(t, common.DecodeJson(r.Body, &payload))
+			require.Equal(t, "A mango robot walks.", payload["prompt"])
+			require.EqualValues(t, float64(5), payload["duration"])
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"code":200,"msg":"success","data":{"taskId":"kie-video-task"}}`))
+		case "/api/v1/runway/record-detail":
+			require.Equal(t, "kie-video-task", r.URL.Query().Get("taskId"))
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"code":200,"msg":"success","data":{"taskId":"kie-video-task","state":"success","videoInfo":{"videoUrl":"https://cdn.example/video.mp4","imageUrl":"https://cdn.example/cover.png"}}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("KIE_BASE_URL", server.URL)
+
+	user := model.User{Username: "agentuser", Role: common.RoleCommonUser, Status: common.UserStatusEnabled, Quota: 1000, Group: "default"}
+	require.NoError(t, db.Create(&user).Error)
+
+	ctx, recorder := newMangouJSONContext(t, http.MethodPost, "/v1/agent/tasks", map[string]any{
+		"type":     "video",
+		"provider": "kie",
+		"model":    "runway",
+		"prompt":   "A mango robot walks.",
+		"params": map[string]any{
+			"duration": 5,
+		},
+	})
+	ctx.Set("id", user.Id)
+	ctx.Set("token_unlimited_quota", true)
+
+	MangouAgentSubmitTask(ctx)
+	require.Equal(t, http.StatusOK, recorder.Code)
+	resp := decodeMangouResponse(t, recorder)
+	require.Equal(t, true, resp["success"])
+	data := resp["data"].(map[string]any)
+
+	var task model.Task
+	require.NoError(t, db.Where("task_id = ?", data["task_id"]).First(&task).Error)
+	require.Equal(t, "kie-video-task", task.PrivateData.UpstreamTaskID)
+
+	getCtx, getRecorder := newMangouJSONContext(t, http.MethodGet, "/v1/agent/tasks/"+task.TaskID, nil)
+	getCtx.Params = gin.Params{{Key: "task_id", Value: task.TaskID}}
+	getCtx.Set("id", user.Id)
+	MangouAgentGetTask(getCtx)
+
+	require.Equal(t, http.StatusOK, getRecorder.Code)
+	getResp := decodeMangouResponse(t, getRecorder)
+	require.Equal(t, true, getResp["success"])
+	getData := getResp["data"].(map[string]any)
+	require.Equal(t, "completed", getData["status"])
+	require.Equal(t, "https://cdn.example/video.mp4", getData["result_url"])
+}

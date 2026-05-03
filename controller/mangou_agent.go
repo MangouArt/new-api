@@ -1,8 +1,11 @@
 package controller
 
 import (
+	"bytes"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strconv"
@@ -48,6 +51,44 @@ type mangouProviderPricingRule struct {
 }
 
 type mangouProviderPricing map[string]map[string]mangouProviderPricingRule
+
+type mangouUpstreamTaskResult struct {
+	ID        string
+	Status    model.TaskStatus
+	Progress  string
+	ResultURL string
+	Raw       []byte
+}
+
+type mangouUnifiedTaskResponse struct {
+	ID       string         `json:"id"`
+	Status   string         `json:"status"`
+	Progress int            `json:"progress"`
+	Results  []string       `json:"results"`
+	Error    map[string]any `json:"error"`
+}
+
+type mangouKIERunwaySubmitResponse struct {
+	Code int    `json:"code"`
+	Msg  string `json:"msg"`
+	Data struct {
+		TaskID string `json:"taskId"`
+	} `json:"data"`
+}
+
+type mangouKIERunwayRecordResponse struct {
+	Code int    `json:"code"`
+	Msg  string `json:"msg"`
+	Data struct {
+		TaskID    string `json:"taskId"`
+		State     string `json:"state"`
+		FailMsg   string `json:"failMsg"`
+		VideoInfo struct {
+			VideoURL string `json:"videoUrl"`
+			ImageURL string `json:"imageUrl"`
+		} `json:"videoInfo"`
+	} `json:"data"`
+}
 
 func MangouAgentSkill(c *gin.Context) {
 	c.Data(http.StatusOK, "text/markdown; charset=utf-8", []byte(`# Mangou NewAPI Agent Skill
@@ -245,6 +286,26 @@ func MangouAgentSubmitTask(c *gin.Context) {
 		},
 		Data: dataBytes,
 	}
+	if upstream, attempted, err := submitMangouUpstreamTask(req); err != nil {
+		refundMangouAgentQuota(c, userID, quota)
+		common.ApiError(c, err)
+		return
+	} else if attempted {
+		task.PrivateData.UpstreamTaskID = upstream.ID
+		if upstream.Status != "" {
+			task.Status = upstream.Status
+		}
+		if upstream.Progress != "" {
+			task.Progress = upstream.Progress
+		}
+		if upstream.ResultURL != "" {
+			task.PrivateData.ResultURL = upstream.ResultURL
+		}
+		task.SetData(gin.H{
+			"request":  data,
+			"upstream": mangouRawJSONValue(upstream.Raw),
+		})
+	}
 	if err := task.Insert(); err != nil {
 		refundMangouAgentQuota(c, userID, quota)
 		common.ApiError(c, err)
@@ -275,16 +336,347 @@ func MangouAgentGetTask(c *gin.Context) {
 		common.ApiErrorMsg(c, "task not found")
 		return
 	}
+	if task.PrivateData.UpstreamTaskID != "" {
+		upstream, err := pollMangouUpstreamTask(task)
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		changed := false
+		if upstream.Status != "" && task.Status != upstream.Status {
+			task.Status = upstream.Status
+			changed = true
+		}
+		if upstream.Progress != "" && task.Progress != upstream.Progress {
+			task.Progress = upstream.Progress
+			changed = true
+		}
+		if upstream.ResultURL != "" && task.PrivateData.ResultURL != upstream.ResultURL {
+			task.PrivateData.ResultURL = upstream.ResultURL
+			changed = true
+		}
+		if len(upstream.Raw) > 0 {
+			var existing any
+			_ = common.Unmarshal(task.Data, &existing)
+			task.SetData(gin.H{
+				"request":  existing,
+				"upstream": mangouRawJSONValue(upstream.Raw),
+			})
+			changed = true
+		}
+		if changed {
+			task.UpdatedAt = time.Now().Unix()
+			if err := task.Update(); err != nil {
+				common.ApiError(c, err)
+				return
+			}
+		}
+	}
 	common.ApiSuccess(c, gin.H{
 		"task_id":    task.TaskID,
 		"provider":   string(task.Platform),
 		"type":       strings.TrimSuffix(task.Action, ".generate"),
 		"model":      task.Properties.UpstreamModelName,
-		"status":     strings.ToLower(string(task.Status)),
+		"status":     mangouTaskPublicStatus(task.Status),
 		"progress":   task.Progress,
 		"quota":      task.Quota,
 		"result_url": task.GetResultURL(),
 	})
+}
+
+func submitMangouUpstreamTask(req mangouAgentTaskRequest) (*mangouUpstreamTaskResult, bool, error) {
+	switch req.Provider {
+	case "evolink", "bltai":
+		key := mangouProviderAPIKey(req.Provider)
+		if key == "" {
+			return nil, false, nil
+		}
+		return submitMangouUnifiedTask(req, key)
+	case "kie":
+		key := mangouProviderAPIKey(req.Provider)
+		if key == "" {
+			return nil, false, nil
+		}
+		return submitMangouKIERunwayTask(req, key)
+	default:
+		return nil, false, nil
+	}
+}
+
+func pollMangouUpstreamTask(task *model.Task) (*mangouUpstreamTaskResult, error) {
+	provider := string(task.Platform)
+	switch provider {
+	case "evolink", "bltai":
+		key := mangouProviderAPIKey(provider)
+		if key == "" {
+			return &mangouUpstreamTaskResult{}, nil
+		}
+		return pollMangouUnifiedTask(provider, task.PrivateData.UpstreamTaskID, key)
+	case "kie":
+		key := mangouProviderAPIKey(provider)
+		if key == "" {
+			return &mangouUpstreamTaskResult{}, nil
+		}
+		return pollMangouKIERunwayTask(task.PrivateData.UpstreamTaskID, key)
+	default:
+		return &mangouUpstreamTaskResult{}, nil
+	}
+}
+
+func submitMangouUnifiedTask(req mangouAgentTaskRequest, key string) (*mangouUpstreamTaskResult, bool, error) {
+	payload := map[string]any{}
+	for k, v := range req.Params {
+		payload[k] = v
+	}
+	payload["model"] = req.Model
+	payload["prompt"] = req.Prompt
+
+	path := "/v1/images/generations"
+	if req.Type == "video" {
+		path = "/v1/videos/generations"
+	}
+	body, err := common.Marshal(payload)
+	if err != nil {
+		return nil, true, err
+	}
+	respBody, err := doMangouProviderJSON(http.MethodPost, mangouUnifiedURL(req.Provider, path), key, body)
+	if err != nil {
+		return nil, true, err
+	}
+	var parsed mangouUnifiedTaskResponse
+	if err := common.Unmarshal(respBody, &parsed); err != nil {
+		return nil, true, err
+	}
+	if parsed.ID == "" {
+		return nil, true, fmt.Errorf("%s upstream response missing task id", req.Provider)
+	}
+	return &mangouUpstreamTaskResult{
+		ID:       parsed.ID,
+		Status:   mapMangouUnifiedStatus(parsed.Status),
+		Progress: mapMangouProgress(parsed.Progress),
+		Raw:      respBody,
+	}, true, nil
+}
+
+func pollMangouUnifiedTask(provider string, upstreamTaskID string, key string) (*mangouUpstreamTaskResult, error) {
+	respBody, err := doMangouProviderJSON(http.MethodGet, mangouUnifiedURL(provider, "/v1/tasks/"+upstreamTaskID), key, nil)
+	if err != nil {
+		return nil, err
+	}
+	var parsed mangouUnifiedTaskResponse
+	if err := common.Unmarshal(respBody, &parsed); err != nil {
+		return nil, err
+	}
+	resultURL := ""
+	if len(parsed.Results) > 0 {
+		resultURL = parsed.Results[0]
+	}
+	if parsed.Status == "failed" && len(parsed.Error) > 0 {
+		if msg, ok := parsed.Error["message"].(string); ok && msg != "" {
+			resultURL = msg
+		}
+	}
+	return &mangouUpstreamTaskResult{
+		ID:        parsed.ID,
+		Status:    mapMangouUnifiedStatus(parsed.Status),
+		Progress:  mapMangouProgress(parsed.Progress),
+		ResultURL: resultURL,
+		Raw:       respBody,
+	}, nil
+}
+
+func submitMangouKIERunwayTask(req mangouAgentTaskRequest, key string) (*mangouUpstreamTaskResult, bool, error) {
+	if req.Type != "video" {
+		return nil, true, errors.New("kie runtime currently supports video tasks")
+	}
+	payload := map[string]any{}
+	for k, v := range req.Params {
+		payload[k] = v
+	}
+	payload["prompt"] = req.Prompt
+	body, err := common.Marshal(payload)
+	if err != nil {
+		return nil, true, err
+	}
+	respBody, err := doMangouProviderJSON(http.MethodPost, mangouKIEURL("/api/v1/runway/generate"), key, body)
+	if err != nil {
+		return nil, true, err
+	}
+	var parsed mangouKIERunwaySubmitResponse
+	if err := common.Unmarshal(respBody, &parsed); err != nil {
+		return nil, true, err
+	}
+	if parsed.Code != 0 && parsed.Code != 200 {
+		return nil, true, fmt.Errorf("kie submit failed: %s", parsed.Msg)
+	}
+	if parsed.Data.TaskID == "" {
+		return nil, true, errors.New("kie upstream response missing task id")
+	}
+	return &mangouUpstreamTaskResult{
+		ID:       parsed.Data.TaskID,
+		Status:   model.TaskStatusSubmitted,
+		Progress: "10%",
+		Raw:      respBody,
+	}, true, nil
+}
+
+func pollMangouKIERunwayTask(upstreamTaskID string, key string) (*mangouUpstreamTaskResult, error) {
+	respBody, err := doMangouProviderJSON(http.MethodGet, mangouKIEURL("/api/v1/runway/record-detail?taskId="+upstreamTaskID), key, nil)
+	if err != nil {
+		return nil, err
+	}
+	var parsed mangouKIERunwayRecordResponse
+	if err := common.Unmarshal(respBody, &parsed); err != nil {
+		return nil, err
+	}
+	if parsed.Code != 0 && parsed.Code != 200 {
+		return nil, fmt.Errorf("kie task query failed: %s", parsed.Msg)
+	}
+	status, progress := mapMangouKIEState(parsed.Data.State)
+	resultURL := parsed.Data.VideoInfo.VideoURL
+	if resultURL == "" {
+		resultURL = parsed.Data.FailMsg
+	}
+	return &mangouUpstreamTaskResult{
+		ID:        parsed.Data.TaskID,
+		Status:    status,
+		Progress:  progress,
+		ResultURL: resultURL,
+		Raw:       respBody,
+	}, nil
+}
+
+func doMangouProviderJSON(method string, target string, key string, body []byte) ([]byte, error) {
+	var reader io.Reader
+	if len(body) > 0 {
+		reader = bytes.NewReader(body)
+	}
+	req, err := http.NewRequest(method, target, reader)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+key)
+	if len(body) > 0 {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	respBody, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return nil, readErr
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("provider request failed: status=%d body=%s", resp.StatusCode, string(respBody))
+	}
+	return respBody, nil
+}
+
+func mangouRawJSONValue(raw []byte) any {
+	var parsed any
+	if len(raw) > 0 && common.Unmarshal(raw, &parsed) == nil {
+		return parsed
+	}
+	return string(raw)
+}
+
+func mangouProviderAPIKey(provider string) string {
+	switch provider {
+	case "bltai":
+		return strings.TrimSpace(os.Getenv("BLTAI_API_KEY"))
+	case "evolink":
+		return strings.TrimSpace(os.Getenv("EVOLINK_API_KEY"))
+	case "kie":
+		return strings.TrimSpace(os.Getenv("KIE_API_KEY"))
+	default:
+		return ""
+	}
+}
+
+func mangouUnifiedURL(provider string, path string) string {
+	base := ""
+	switch provider {
+	case "bltai":
+		base = os.Getenv("BLTAI_BASE_URL")
+		if base == "" {
+			base = "https://api.bltcy.ai/v1"
+		}
+	case "evolink":
+		base = os.Getenv("EVOLINK_BASE_URL")
+		if base == "" {
+			base = "https://api.evolink.ai"
+		}
+	}
+	base = strings.TrimRight(base, "/")
+	if strings.HasSuffix(base, "/v1") && strings.HasPrefix(path, "/v1/") {
+		path = strings.TrimPrefix(path, "/v1")
+	}
+	return base + path
+}
+
+func mangouKIEURL(path string) string {
+	base := strings.TrimRight(os.Getenv("KIE_BASE_URL"), "/")
+	if base == "" {
+		base = "https://api.kie.ai"
+	}
+	return base + path
+}
+
+func mapMangouUnifiedStatus(status string) model.TaskStatus {
+	switch strings.ToLower(status) {
+	case "completed", "success", "succeeded":
+		return model.TaskStatusSuccess
+	case "failed", "failure", "error":
+		return model.TaskStatusFailure
+	case "processing", "running", "in_progress":
+		return model.TaskStatusInProgress
+	case "pending", "queued", "submitted":
+		return model.TaskStatusSubmitted
+	default:
+		return ""
+	}
+}
+
+func mapMangouKIEState(state string) (model.TaskStatus, string) {
+	switch strings.ToLower(state) {
+	case "success", "completed", "succeeded":
+		return model.TaskStatusSuccess, "100%"
+	case "fail", "failed", "failure", "error":
+		return model.TaskStatusFailure, "100%"
+	case "processing", "running", "in_progress":
+		return model.TaskStatusInProgress, "50%"
+	case "waiting", "pending", "queued", "submitted":
+		return model.TaskStatusSubmitted, "10%"
+	default:
+		return "", ""
+	}
+}
+
+func mapMangouProgress(progress int) string {
+	if progress <= 0 {
+		return ""
+	}
+	if progress > 100 {
+		progress = 100
+	}
+	return strconv.Itoa(progress) + "%"
+}
+
+func mangouTaskPublicStatus(status model.TaskStatus) string {
+	switch status {
+	case model.TaskStatusSuccess:
+		return "completed"
+	case model.TaskStatusFailure:
+		return "failed"
+	case model.TaskStatusInProgress:
+		return "processing"
+	case model.TaskStatusSubmitted, model.TaskStatusQueued, model.TaskStatusNotStart:
+		return "submitted"
+	default:
+		return strings.ToLower(string(status))
+	}
 }
 
 func MangouAgentListTasks(c *gin.Context) {
@@ -308,7 +700,7 @@ func MangouAgentListTasks(c *gin.Context) {
 			"provider":   string(task.Platform),
 			"type":       strings.TrimSuffix(task.Action, ".generate"),
 			"model":      task.Properties.UpstreamModelName,
-			"status":     strings.ToLower(string(task.Status)),
+			"status":     mangouTaskPublicStatus(task.Status),
 			"progress":   task.Progress,
 			"quota":      task.Quota,
 			"result_url": task.GetResultURL(),
@@ -321,6 +713,16 @@ func MangouAgentListTasks(c *gin.Context) {
 
 func loadMangouProviderPricing() (mangouProviderPricing, error) {
 	raw := strings.TrimSpace(os.Getenv("MANGOU_PROVIDER_PRICING"))
+	if raw == "" {
+		rawB64 := strings.TrimSpace(os.Getenv("MANGOU_PROVIDER_PRICING_B64"))
+		if rawB64 != "" {
+			decoded, err := base64.StdEncoding.DecodeString(rawB64)
+			if err != nil {
+				return nil, fmt.Errorf("invalid MANGOU_PROVIDER_PRICING_B64: %w", err)
+			}
+			raw = string(decoded)
+		}
+	}
 	if raw == "" {
 		return nil, errors.New("MANGOU_PROVIDER_PRICING is not configured")
 	}
