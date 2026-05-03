@@ -183,6 +183,45 @@ func TestUpdateWithStatus_Lose(t *testing.T) {
 	assert.EqualValues(t, TaskStatusFailure, reloaded.Status) // unchanged
 }
 
+func TestGetAllUnFinishSyncTasksExcludesMangouAgentTasks(t *testing.T) {
+	truncateTables(t)
+
+	insertTask(t, &Task{
+		TaskID:   "mangou_image_task",
+		Action:   "image.generate",
+		Status:   TaskStatusSubmitted,
+		Progress: "10%",
+		PrivateData: TaskPrivateData{
+			UpstreamTaskID: "upstream-image",
+		},
+		Data: json.RawMessage(`{}`),
+	})
+	insertTask(t, &Task{
+		TaskID:   "mangou_video_task",
+		Action:   "video.generate",
+		Status:   TaskStatusSubmitted,
+		Progress: "10%",
+		PrivateData: TaskPrivateData{
+			UpstreamTaskID: "upstream-video",
+		},
+		Data: json.RawMessage(`{}`),
+	})
+	insertTask(t, &Task{
+		TaskID:   "regular_async_task",
+		Action:   "regular.generate",
+		Status:   TaskStatusSubmitted,
+		Progress: "10%",
+		PrivateData: TaskPrivateData{
+			UpstreamTaskID: "upstream-regular",
+		},
+		Data: json.RawMessage(`{}`),
+	})
+
+	tasks := GetAllUnFinishSyncTasks(10)
+	require.Len(t, tasks, 1)
+	assert.Equal(t, "regular_async_task", tasks[0].TaskID)
+}
+
 func TestUpdateWithStatus_ConcurrentWinner(t *testing.T) {
 	truncateTables(t)
 
