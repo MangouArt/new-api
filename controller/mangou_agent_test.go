@@ -271,6 +271,47 @@ func TestMangouAgentSubmitTaskSubmitsUnifiedProviderTask(t *testing.T) {
 	require.Equal(t, "https://cdn.example/image.png", getData["result_url"])
 }
 
+func TestMangouAgentSubmitTaskAcceptsOpenAICompatibleImageResponse(t *testing.T) {
+	db := setupMangouAgentTestDB(t)
+	seedMangouPricing(t, db, "bltai", "image", 100, "")
+	t.Setenv("BLTAI_API_KEY", "test-bltai-key")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "Bearer test-bltai-key", r.Header.Get("Authorization"))
+		require.Equal(t, "/v1/images/generations", r.URL.Path)
+		require.Equal(t, http.MethodPost, r.Method)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"created":1777821713,"data":[{"url":"https://cdn.example/sync-image.jpg"}],"model":"nano-banana-pro"}`))
+	}))
+	defer server.Close()
+	t.Setenv("BLTAI_BASE_URL", server.URL+"/v1")
+
+	user := model.User{Username: "agentuser", Role: common.RoleCommonUser, Status: common.UserStatusEnabled, Quota: 1000, Group: "default"}
+	require.NoError(t, db.Create(&user).Error)
+
+	ctx, recorder := newMangouJSONContext(t, http.MethodPost, "/v1/agent/tasks", map[string]any{
+		"type":     "image",
+		"provider": "bltai",
+		"model":    "nano-banana-2",
+		"prompt":   "A mango robot.",
+	})
+	ctx.Set("id", user.Id)
+	ctx.Set("token_unlimited_quota", true)
+
+	MangouAgentSubmitTask(ctx)
+	require.Equal(t, http.StatusOK, recorder.Code)
+	resp := decodeMangouResponse(t, recorder)
+	require.Equal(t, true, resp["success"])
+	data := resp["data"].(map[string]any)
+
+	var task model.Task
+	require.NoError(t, db.Where("task_id = ?", data["task_id"]).First(&task).Error)
+	require.Empty(t, task.PrivateData.UpstreamTaskID)
+	require.EqualValues(t, model.TaskStatusSuccess, task.Status)
+	require.Equal(t, "100%", task.Progress)
+	require.Equal(t, "https://cdn.example/sync-image.jpg", task.PrivateData.ResultURL)
+}
+
 func TestMangouAgentSubmitTaskSubmitsKIERunwayVideoTask(t *testing.T) {
 	db := setupMangouAgentTestDB(t)
 	seedMangouPricing(t, db, "kie", "video", 200, "")

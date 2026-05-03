@@ -57,11 +57,17 @@ type mangouUpstreamTaskResult struct {
 }
 
 type mangouUnifiedTaskResponse struct {
-	ID       string         `json:"id"`
-	Status   string         `json:"status"`
-	Progress int            `json:"progress"`
-	Results  []string       `json:"results"`
-	Error    map[string]any `json:"error"`
+	ID       string                       `json:"id"`
+	Status   string                       `json:"status"`
+	Progress int                          `json:"progress"`
+	Results  []string                     `json:"results"`
+	Error    map[string]any               `json:"error"`
+	Data     []mangouUnifiedGeneratedItem `json:"data"`
+}
+
+type mangouUnifiedGeneratedItem struct {
+	URL     string `json:"url"`
+	B64JSON string `json:"b64_json"`
 }
 
 type mangouKIERunwaySubmitResponse struct {
@@ -438,14 +444,22 @@ func submitMangouUnifiedTask(req mangouAgentTaskRequest, key string) (*mangouUps
 	if err := common.Unmarshal(respBody, &parsed); err != nil {
 		return nil, true, err
 	}
-	if parsed.ID == "" {
+	resultURL := firstMangouUnifiedResultURL(parsed)
+	if parsed.ID == "" && resultURL == "" {
 		return nil, true, fmt.Errorf("%s upstream response missing task id", req.Provider)
 	}
+	status := mapMangouUnifiedStatus(parsed.Status)
+	progress := mapMangouProgress(parsed.Progress)
+	if parsed.ID == "" && resultURL != "" {
+		status = model.TaskStatusSuccess
+		progress = "100%"
+	}
 	return &mangouUpstreamTaskResult{
-		ID:       parsed.ID,
-		Status:   mapMangouUnifiedStatus(parsed.Status),
-		Progress: mapMangouProgress(parsed.Progress),
-		Raw:      respBody,
+		ID:        parsed.ID,
+		Status:    status,
+		Progress:  progress,
+		ResultURL: resultURL,
+		Raw:       respBody,
 	}, true, nil
 }
 
@@ -458,10 +472,7 @@ func pollMangouUnifiedTask(provider string, upstreamTaskID string, key string) (
 	if err := common.Unmarshal(respBody, &parsed); err != nil {
 		return nil, err
 	}
-	resultURL := ""
-	if len(parsed.Results) > 0 {
-		resultURL = parsed.Results[0]
-	}
+	resultURL := firstMangouUnifiedResultURL(parsed)
 	if parsed.Status == "failed" && len(parsed.Error) > 0 {
 		if msg, ok := parsed.Error["message"].(string); ok && msg != "" {
 			resultURL = msg
@@ -474,6 +485,21 @@ func pollMangouUnifiedTask(provider string, upstreamTaskID string, key string) (
 		ResultURL: resultURL,
 		Raw:       respBody,
 	}, nil
+}
+
+func firstMangouUnifiedResultURL(parsed mangouUnifiedTaskResponse) string {
+	if len(parsed.Results) > 0 {
+		return parsed.Results[0]
+	}
+	for _, item := range parsed.Data {
+		if item.URL != "" {
+			return item.URL
+		}
+		if item.B64JSON != "" {
+			return "data:image/png;base64," + item.B64JSON
+		}
+	}
+	return ""
 }
 
 func submitMangouKIERunwayTask(req mangouAgentTaskRequest, key string) (*mangouUpstreamTaskResult, bool, error) {
