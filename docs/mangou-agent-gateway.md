@@ -81,53 +81,50 @@ Failure behavior:
 
 ## Pricing Config
 
-Pricing must be configurable because upstream provider pricing changes. Do not hard-code provider docs into request logic.
+Pricing must be configurable because upstream provider pricing changes. Do not hard-code provider docs into request logic, and do not keep pricing in env vars.
 
-Initial config source:
+Single source of truth:
 
 ```text
-MANGOU_PROVIDER_PRICING
-MANGOU_PROVIDER_PRICING_B64
+mangou_provider_pricings table
 ```
 
-JSON shape:
+Table columns:
+
+```text
+provider
+task_type
+base_quota
+multipliers_json
+enabled
+created_at
+updated_at
+```
+
+`multipliers_json` shape:
 
 ```json
 {
-  "bltai": {
-    "image": {
-      "base_quota": 100,
-      "multipliers": {
-        "image_size": {
-          "1K": 1,
-          "2K": 2
-        },
-        "quality": {
-          "standard": 1,
-          "hd": 1.5
-        }
-      }
-    },
-    "video": {
-      "base_quota": 500,
-      "multipliers": {
-        "duration": {
-          "5": 1,
-          "10": 1.8
-        },
-        "resolution": {
-          "720p": 1,
-          "1080p": 1.6
-        }
-      }
-    }
+  "image_size": {
+    "1K": 1,
+    "2K": 2
+  },
+  "quality": {
+    "standard": 1,
+    "hd": 1.5
   }
 }
 ```
 
-Later this can move from env to NewAPI options/admin UI without changing the public agent API.
+Example row:
 
-`MANGOU_PROVIDER_PRICING_B64` accepts the same JSON after base64 encoding. Prefer it on platforms whose env CLI has trouble with commas or nested JSON.
+```text
+provider=bltai
+task_type=image
+base_quota=100
+multipliers_json={"image_size":{"1K":1,"2K":2},"quality":{"standard":1,"hd":1.5}}
+enabled=true
+```
 
 ## Agent Registration
 

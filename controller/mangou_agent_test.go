@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 
@@ -32,7 +31,7 @@ func setupMangouAgentTestDB(t *testing.T) *gorm.DB {
 	require.NoError(t, err)
 	model.DB = db
 	model.LOG_DB = db
-	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Token{}, &model.Task{}, &model.Log{}))
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Token{}, &model.Task{}, &model.Log{}, &model.MangouProviderPricing{}))
 
 	t.Cleanup(func() {
 		sqlDB, err := db.DB()
@@ -41,6 +40,18 @@ func setupMangouAgentTestDB(t *testing.T) *gorm.DB {
 		}
 	})
 	return db
+}
+
+func seedMangouPricing(t *testing.T, db *gorm.DB, provider string, taskType string, baseQuota int, multipliers string) {
+	t.Helper()
+	pricing := model.MangouProviderPricing{
+		Provider:        provider,
+		TaskType:        taskType,
+		BaseQuota:       baseQuota,
+		MultipliersJSON: multipliers,
+		Enabled:         true,
+	}
+	require.NoError(t, db.Create(&pricing).Error)
 }
 
 func newMangouJSONContext(t *testing.T, method string, target string, body any) (*gin.Context, *httptest.ResponseRecorder) {
@@ -109,7 +120,7 @@ func TestMangouAgentRegisterRejectsInvalidVerificationCode(t *testing.T) {
 
 func TestMangouAgentSubmitTaskCreatesAsyncImageTaskWithParameterPricing(t *testing.T) {
 	db := setupMangouAgentTestDB(t)
-	t.Setenv("MANGOU_PROVIDER_PRICING", `{"bltai":{"image":{"base_quota":100,"multipliers":{"image_size":{"1K":1,"2K":2},"quality":{"standard":1,"hd":1.5}}}}}`)
+	seedMangouPricing(t, db, "bltai", "image", 100, `{"image_size":{"1K":1,"2K":2},"quality":{"standard":1,"hd":1.5}}`)
 
 	user := model.User{
 		Username:    "agentuser",
@@ -167,7 +178,6 @@ func TestMangouAgentSubmitTaskCreatesAsyncImageTaskWithParameterPricing(t *testi
 
 func TestMangouAgentSubmitTaskRejectsMissingProviderPricing(t *testing.T) {
 	setupMangouAgentTestDB(t)
-	t.Setenv("MANGOU_PROVIDER_PRICING", `{"bltai":{"image":{"base_quota":100}}}`)
 
 	ctx, recorder := newMangouJSONContext(t, http.MethodPost, "/v1/agent/tasks", map[string]any{
 		"type":     "video",
@@ -184,32 +194,20 @@ func TestMangouAgentSubmitTaskRejectsMissingProviderPricing(t *testing.T) {
 	require.Equal(t, false, resp["success"])
 }
 
-func TestMangouProviderPricingConfigDoesNotReadStaleEnv(t *testing.T) {
-	t.Setenv("MANGOU_PROVIDER_PRICING", `{"bltai":{"image":{"base_quota":100}}}`)
-	first, err := loadMangouProviderPricing()
+func TestMangouProviderPricingUsesDatabaseOnly(t *testing.T) {
+	db := setupMangouAgentTestDB(t)
+	t.Setenv("MANGOU_PROVIDER_PRICING", `{"bltai":{"image":{"base_quota":999}}}`)
+	t.Setenv("MANGOU_PROVIDER_PRICING_B64", "eyJibHRhaSI6eyJpbWFnZSI6eyJiYXNlX3F1b3RhIjo5OTl9fX0=")
+	seedMangouPricing(t, db, "bltai", "image", 100, "")
+
+	rule, err := loadMangouProviderPricingRule("bltai", "image")
 	require.NoError(t, err)
-	require.Equal(t, 100, first["bltai"]["image"].BaseQuota)
-
-	t.Setenv("MANGOU_PROVIDER_PRICING", `{"bltai":{"image":{"base_quota":250}}}`)
-	second, err := loadMangouProviderPricing()
-	require.NoError(t, err)
-	require.Equal(t, 250, second["bltai"]["image"].BaseQuota)
-
-	_ = os.Unsetenv("MANGOU_PROVIDER_PRICING")
-}
-
-func TestMangouProviderPricingConfigSupportsBase64Env(t *testing.T) {
-	t.Setenv("MANGOU_PROVIDER_PRICING", "")
-	t.Setenv("MANGOU_PROVIDER_PRICING_B64", "eyJibHRhaSI6eyJpbWFnZSI6eyJiYXNlX3F1b3RhIjoxMDB9fX0=")
-
-	pricing, err := loadMangouProviderPricing()
-	require.NoError(t, err)
-	require.Equal(t, 100, pricing["bltai"]["image"].BaseQuota)
+	require.Equal(t, 100, rule.BaseQuota)
 }
 
 func TestMangouAgentSubmitTaskSubmitsUnifiedProviderTask(t *testing.T) {
 	db := setupMangouAgentTestDB(t)
-	t.Setenv("MANGOU_PROVIDER_PRICING", `{"evolink":{"image":{"base_quota":100}}}`)
+	seedMangouPricing(t, db, "evolink", "image", 100, "")
 	t.Setenv("EVOLINK_API_KEY", "test-evolink-key")
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -275,7 +273,7 @@ func TestMangouAgentSubmitTaskSubmitsUnifiedProviderTask(t *testing.T) {
 
 func TestMangouAgentSubmitTaskSubmitsKIERunwayVideoTask(t *testing.T) {
 	db := setupMangouAgentTestDB(t)
-	t.Setenv("MANGOU_PROVIDER_PRICING", `{"kie":{"video":{"base_quota":200}}}`)
+	seedMangouPricing(t, db, "kie", "video", 200, "")
 	t.Setenv("KIE_API_KEY", "test-kie-key")
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

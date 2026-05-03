@@ -2,12 +2,10 @@ package controller
 
 import (
 	"bytes"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -49,8 +47,6 @@ type mangouProviderPricingRule struct {
 	BaseQuota   int                           `json:"base_quota"`
 	Multipliers map[string]map[string]float64 `json:"multipliers"`
 }
-
-type mangouProviderPricing map[string]map[string]mangouProviderPricingRule
 
 type mangouUpstreamTaskResult struct {
 	ID        string
@@ -214,12 +210,7 @@ func MangouAgentSubmitTask(c *gin.Context) {
 		return
 	}
 
-	pricing, err := loadMangouProviderPricing()
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	quota, ratios, err := calculateMangouTaskQuota(pricing, req.Provider, req.Type, req.Params)
+	quota, ratios, err := calculateMangouTaskQuota(req.Provider, req.Type, req.Params)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -585,11 +576,11 @@ func mangouRawJSONValue(raw []byte) any {
 func mangouProviderAPIKey(provider string) string {
 	switch provider {
 	case "bltai":
-		return strings.TrimSpace(os.Getenv("BLTAI_API_KEY"))
+		return strings.TrimSpace(common.GetEnvOrDefaultString("BLTAI_API_KEY", ""))
 	case "evolink":
-		return strings.TrimSpace(os.Getenv("EVOLINK_API_KEY"))
+		return strings.TrimSpace(common.GetEnvOrDefaultString("EVOLINK_API_KEY", ""))
 	case "kie":
-		return strings.TrimSpace(os.Getenv("KIE_API_KEY"))
+		return strings.TrimSpace(common.GetEnvOrDefaultString("KIE_API_KEY", ""))
 	default:
 		return ""
 	}
@@ -599,12 +590,12 @@ func mangouUnifiedURL(provider string, path string) string {
 	base := ""
 	switch provider {
 	case "bltai":
-		base = os.Getenv("BLTAI_BASE_URL")
+		base = common.GetEnvOrDefaultString("BLTAI_BASE_URL", "")
 		if base == "" {
 			base = "https://api.bltcy.ai/v1"
 		}
 	case "evolink":
-		base = os.Getenv("EVOLINK_BASE_URL")
+		base = common.GetEnvOrDefaultString("EVOLINK_BASE_URL", "")
 		if base == "" {
 			base = "https://api.evolink.ai"
 		}
@@ -617,7 +608,7 @@ func mangouUnifiedURL(provider string, path string) string {
 }
 
 func mangouKIEURL(path string) string {
-	base := strings.TrimRight(os.Getenv("KIE_BASE_URL"), "/")
+	base := strings.TrimRight(common.GetEnvOrDefaultString("KIE_BASE_URL", ""), "/")
 	if base == "" {
 		base = "https://api.kie.ai"
 	}
@@ -711,39 +702,28 @@ func MangouAgentListTasks(c *gin.Context) {
 	common.ApiSuccess(c, pageInfo)
 }
 
-func loadMangouProviderPricing() (mangouProviderPricing, error) {
-	raw := strings.TrimSpace(os.Getenv("MANGOU_PROVIDER_PRICING"))
-	if raw == "" {
-		rawB64 := strings.TrimSpace(os.Getenv("MANGOU_PROVIDER_PRICING_B64"))
-		if rawB64 != "" {
-			decoded, err := base64.StdEncoding.DecodeString(rawB64)
-			if err != nil {
-				return nil, fmt.Errorf("invalid MANGOU_PROVIDER_PRICING_B64: %w", err)
-			}
-			raw = string(decoded)
-		}
+func loadMangouProviderPricingRule(provider string, taskType string) (mangouProviderPricingRule, error) {
+	pricing, exists, err := model.GetMangouProviderPricing(provider, taskType)
+	if err != nil {
+		return mangouProviderPricingRule{}, err
 	}
-	if raw == "" {
-		return nil, errors.New("MANGOU_PROVIDER_PRICING is not configured")
+	if !exists {
+		return mangouProviderPricingRule{}, fmt.Errorf("pricing for provider %s type %s is not configured", provider, taskType)
 	}
-	var pricing mangouProviderPricing
-	if err := common.Unmarshal([]byte(raw), &pricing); err != nil {
-		return nil, fmt.Errorf("invalid MANGOU_PROVIDER_PRICING: %w", err)
+	multipliers, err := pricing.GetMultipliers()
+	if err != nil {
+		return mangouProviderPricingRule{}, fmt.Errorf("invalid pricing multipliers for provider %s type %s: %w", provider, taskType, err)
 	}
-	if len(pricing) == 0 {
-		return nil, errors.New("MANGOU_PROVIDER_PRICING is empty")
-	}
-	return pricing, nil
+	return mangouProviderPricingRule{
+		BaseQuota:   pricing.BaseQuota,
+		Multipliers: multipliers,
+	}, nil
 }
 
-func calculateMangouTaskQuota(pricing mangouProviderPricing, provider string, taskType string, params map[string]any) (int, map[string]float64, error) {
-	providerPricing, ok := pricing[provider]
-	if !ok {
-		return 0, nil, fmt.Errorf("pricing for provider %s is not configured", provider)
-	}
-	rule, ok := providerPricing[taskType]
-	if !ok {
-		return 0, nil, fmt.Errorf("pricing for provider %s type %s is not configured", provider, taskType)
+func calculateMangouTaskQuota(provider string, taskType string, params map[string]any) (int, map[string]float64, error) {
+	rule, err := loadMangouProviderPricingRule(provider, taskType)
+	if err != nil {
+		return 0, nil, err
 	}
 	if rule.BaseQuota <= 0 {
 		return 0, nil, fmt.Errorf("base_quota for provider %s type %s must be positive", provider, taskType)
