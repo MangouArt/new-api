@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
@@ -25,6 +26,7 @@ func setupMangouAgentTestDB(t *testing.T) *gorm.DB {
 	common.UsingPostgreSQL = false
 	common.RedisEnabled = false
 	common.BatchUpdateEnabled = false
+	model.InitSQLColumnNames()
 
 	dsn := fmt.Sprintf("file:%s?mode=memory&cache=shared", strings.ReplaceAll(t.Name(), "/", "_"))
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
@@ -180,6 +182,55 @@ func TestMangouAgentAuthCheckReturnsAgentContext(t *testing.T) {
 	require.Equal(t, "hermes-mangou", data["agent_id"])
 	require.Equal(t, "agent@example.com", data["email"])
 	require.EqualValues(t, 123, data["balance"])
+}
+
+func TestMangouAgentRegisteredTokenPassesAuthMiddleware(t *testing.T) {
+	db := setupMangouAgentTestDB(t)
+	common.RegisterVerificationCodeWithKey("agent@example.com", "123456", common.EmailVerificationPurpose)
+
+	router := gin.New()
+	router.POST("/v1/agents/register", MangouAgentRegister)
+	agentRouter := router.Group("/v1/agent")
+	agentRouter.Use(middleware.TokenAuth())
+	agentRouter.GET("/auth/check", MangouAgentAuthCheck)
+
+	registerPayload, err := common.Marshal(map[string]any{
+		"email":             "agent@example.com",
+		"verification_code": "123456",
+		"agent_id":          "hermes-mangou",
+	})
+	require.NoError(t, err)
+	registerReq := httptest.NewRequest(http.MethodPost, "/v1/agents/register", bytes.NewReader(registerPayload))
+	registerReq.Header.Set("Content-Type", "application/json")
+	registerRecorder := httptest.NewRecorder()
+
+	router.ServeHTTP(registerRecorder, registerReq)
+
+	require.Equal(t, http.StatusOK, registerRecorder.Code)
+	registerResp := decodeMangouResponse(t, registerRecorder)
+	require.Equal(t, true, registerResp["success"])
+	registerData := registerResp["data"].(map[string]any)
+	billingToken := registerData["billing_token"].(string)
+	require.NotEmpty(t, billingToken)
+	require.NotContains(t, billingToken, "*")
+	require.NotContains(t, billingToken, "...")
+
+	checkReq := httptest.NewRequest(http.MethodGet, "/v1/agent/auth/check", nil)
+	checkReq.Header.Set("Authorization", "Bearer "+billingToken)
+	checkRecorder := httptest.NewRecorder()
+
+	router.ServeHTTP(checkRecorder, checkReq)
+
+	require.Equal(t, http.StatusOK, checkRecorder.Code)
+	checkResp := decodeMangouResponse(t, checkRecorder)
+	require.Equal(t, true, checkResp["success"])
+	checkData := checkResp["data"].(map[string]any)
+	require.Equal(t, "hermes-mangou", checkData["agent_id"])
+	require.Equal(t, "agent@example.com", checkData["email"])
+
+	var token model.Token
+	require.NoError(t, db.Where("name = ?", "agent:hermes-mangou").First(&token).Error)
+	require.Equal(t, "default", token.Group)
 }
 
 func TestMangouAgentRegisterRejectsInvalidVerificationCode(t *testing.T) {
