@@ -917,6 +917,13 @@ func findOrCreateMangouAgentToken(userID int, agentID string) (*model.Token, boo
 	var token model.Token
 	err := model.DB.Where("user_id = ? AND name = ?", userID, tokenName).First(&token).Error
 	if err == nil {
+		if token.Group == "auto" {
+			token.Group = "default"
+			token.CrossGroupRetry = true
+			if err := token.Update(); err != nil {
+				return nil, false, err
+			}
+		}
 		return &token, false, nil
 	}
 	if !errors.Is(err, gorm.ErrRecordNotFound) {
@@ -938,7 +945,7 @@ func findOrCreateMangouAgentToken(userID int, agentID string) (*model.Token, boo
 		RemainQuota:        0,
 		UnlimitedQuota:     true,
 		ModelLimitsEnabled: false,
-		Group:              "auto",
+		Group:              "default",
 		CrossGroupRetry:    true,
 	}
 	if err := token.Insert(); err != nil {

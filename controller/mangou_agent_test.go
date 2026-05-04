@@ -103,7 +103,7 @@ func TestMangouAgentRegisterCreatesUserAndTokenWithVerifiedEmail(t *testing.T) {
 	var token model.Token
 	require.NoError(t, db.Where("user_id = ? AND name = ?", user.Id, "agent:hermes-mangou").First(&token).Error)
 	require.True(t, token.UnlimitedQuota)
-	require.Equal(t, "auto", token.Group)
+	require.Equal(t, "default", token.Group)
 }
 
 func TestMangouAgentRegisterReturnsFullExistingTokenForAgentReuse(t *testing.T) {
@@ -148,6 +148,10 @@ func TestMangouAgentRegisterReturnsFullExistingTokenForAgentReuse(t *testing.T) 
 	require.Equal(t, "ExistingFullAgentToken12345678901234567890", data["token"])
 	require.Equal(t, data["token"], data["billing_token"])
 	require.Contains(t, data["token_preview"], "*")
+
+	var updated model.Token
+	require.NoError(t, db.First(&updated, token.Id).Error)
+	require.Equal(t, "default", updated.Group)
 }
 
 func TestMangouAgentAuthCheckReturnsAgentContext(t *testing.T) {
