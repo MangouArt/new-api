@@ -20,6 +20,7 @@ func SetMangouAgentRouter(router *gin.Engine) {
 	agentRouter.Use(middleware.RouteTag("relay"))
 	agentRouter.Use(middleware.TokenAuth())
 	{
+		agentRouter.GET("/auth/check", controller.MangouAgentAuthCheck)
 		agentRouter.POST("/tasks", controller.MangouAgentSubmitTask)
 		agentRouter.GET("/tasks", controller.MangouAgentListTasks)
 		agentRouter.GET("/tasks/:task_id", controller.MangouAgentGetTask)

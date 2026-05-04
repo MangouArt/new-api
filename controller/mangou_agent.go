@@ -103,15 +103,55 @@ Use this NewAPI gateway for Mangou image and video tasks.
 
 POST /v1/agents/register/email-code
 
+Body:
+
+`+"```json"+`
+{
+  "email": "user@example.com"
+}
+`+"```"+`
+
 2. Register with email and code:
 
 POST /v1/agents/register
 
-Store the returned token as `+"`BILLING_TOKEN`"+` and send it as `+"`Authorization: Bearer ${BILLING_TOKEN}`"+`.
+Body:
+
+`+"```json"+`
+{
+  "email": "user@example.com",
+  "verification_code": "123456",
+  "agent_id": "mangou-agent"
+}
+`+"```"+`
+
+Store the returned `+"`billing_token`"+` as `+"`BILLING_TOKEN`"+` and send it as `+"`Authorization: Bearer ${BILLING_TOKEN}`"+`.
+
+3. Verify the token:
+
+GET /v1/agent/auth/check
+
+Use header `+"`Authorization: Bearer ${BILLING_TOKEN}`"+`.
 
 ## Submit Task
 
 POST /v1/agent/tasks
+
+Body:
+
+`+"```json"+`
+{
+  "type": "image",
+  "provider": "bltai",
+  "model": "nano-banana-2",
+  "prompt": "A mango robot painting a storyboard, no text.",
+  "params": {
+    "image_size": "1K",
+    "quality": "standard",
+    "response_format": "url"
+  }
+}
+`+"```"+`
 
 Images and videos are both asynchronous tasks. Poll `+"`/v1/agent/tasks/{task_id}`"+` until the task reaches a terminal status.
 `))
@@ -176,20 +216,41 @@ func MangouAgentRegister(c *gin.Context) {
 	common.DeleteKey(email, common.EmailVerificationPurpose)
 
 	tokenValue := token.GetFullKey()
-	if !tokenCreated {
-		tokenValue = token.GetMaskedKey()
-	}
-
 	common.ApiSuccess(c, gin.H{
-		"agent_id":    agentID,
-		"email":       user.Email,
-		"user_id":     user.Id,
-		"token":       tokenValue,
-		"token_new":   tokenCreated,
-		"balance":     user.Quota,
-		"base_url":    strings.TrimSuffix(system_setting.ServerAddress, "/"),
-		"skill_url":   strings.TrimSuffix(system_setting.ServerAddress, "/") + "/skills/mangou-newapi/SKILL.md",
-		"token_store": "BILLING_TOKEN",
+		"agent_id":      agentID,
+		"email":         user.Email,
+		"user_id":       user.Id,
+		"token":         tokenValue,
+		"billing_token": tokenValue,
+		"token_preview": token.GetMaskedKey(),
+		"token_new":     tokenCreated,
+		"balance":       user.Quota,
+		"base_url":      strings.TrimSuffix(system_setting.ServerAddress, "/"),
+		"skill_url":     strings.TrimSuffix(system_setting.ServerAddress, "/") + "/skills/mangou-newapi/SKILL.md",
+		"token_store":   "BILLING_TOKEN",
+	})
+}
+
+func MangouAgentAuthCheck(c *gin.Context) {
+	userID := c.GetInt("id")
+	if userID <= 0 {
+		common.ApiErrorMsg(c, "authenticated user is required")
+		return
+	}
+	user, err := model.GetUserById(userID, false)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	agentID := strings.TrimPrefix(c.GetString("token_name"), mangouAgentTokenPrefix)
+	if agentID == "" {
+		agentID = mangouAgentDefaultAgentID
+	}
+	common.ApiSuccess(c, gin.H{
+		"agent_id": agentID,
+		"email":    user.Email,
+		"user_id":  user.Id,
+		"balance":  user.Quota,
 	})
 }
 

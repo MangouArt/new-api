@@ -93,6 +93,10 @@ func TestMangouAgentRegisterCreatesUserAndTokenWithVerifiedEmail(t *testing.T) {
 	require.Equal(t, "agent@example.com", data["email"])
 	require.Equal(t, "hermes-mangou", data["agent_id"])
 	require.NotEmpty(t, data["token"])
+	require.Equal(t, data["token"], data["billing_token"])
+	require.NotContains(t, data["token"], "*")
+	require.NotContains(t, data["token"], "...")
+	require.Contains(t, data["token_preview"], "*")
 
 	var user model.User
 	require.NoError(t, db.Where("email = ?", "agent@example.com").First(&user).Error)
@@ -100,6 +104,78 @@ func TestMangouAgentRegisterCreatesUserAndTokenWithVerifiedEmail(t *testing.T) {
 	require.NoError(t, db.Where("user_id = ? AND name = ?", user.Id, "agent:hermes-mangou").First(&token).Error)
 	require.True(t, token.UnlimitedQuota)
 	require.Equal(t, "auto", token.Group)
+}
+
+func TestMangouAgentRegisterReturnsFullExistingTokenForAgentReuse(t *testing.T) {
+	db := setupMangouAgentTestDB(t)
+	common.RegisterVerificationCodeWithKey("agent@example.com", "123456", common.EmailVerificationPurpose)
+
+	user := model.User{
+		Username:    "agentuser",
+		DisplayName: "agentuser",
+		Role:        common.RoleCommonUser,
+		Status:      common.UserStatusEnabled,
+		Email:       "agent@example.com",
+		Group:       "default",
+	}
+	require.NoError(t, db.Create(&user).Error)
+	token := model.Token{
+		UserId:             user.Id,
+		Name:               "agent:hermes-mangou",
+		Key:                "ExistingFullAgentToken12345678901234567890",
+		Status:             common.TokenStatusEnabled,
+		ExpiredTime:        -1,
+		UnlimitedQuota:     true,
+		ModelLimitsEnabled: false,
+		Group:              "auto",
+		CrossGroupRetry:    true,
+	}
+	require.NoError(t, db.Create(&token).Error)
+
+	ctx, recorder := newMangouJSONContext(t, http.MethodPost, "/v1/agents/register", map[string]any{
+		"email":             "agent@example.com",
+		"verification_code": "123456",
+		"agent_id":          "hermes-mangou",
+	})
+
+	MangouAgentRegister(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	resp := decodeMangouResponse(t, recorder)
+	require.Equal(t, true, resp["success"])
+	data := resp["data"].(map[string]any)
+	require.Equal(t, false, data["token_new"])
+	require.Equal(t, "ExistingFullAgentToken12345678901234567890", data["token"])
+	require.Equal(t, data["token"], data["billing_token"])
+	require.Contains(t, data["token_preview"], "*")
+}
+
+func TestMangouAgentAuthCheckReturnsAgentContext(t *testing.T) {
+	db := setupMangouAgentTestDB(t)
+	user := model.User{
+		Username:    "agentuser",
+		DisplayName: "agentuser",
+		Role:        common.RoleCommonUser,
+		Status:      common.UserStatusEnabled,
+		Email:       "agent@example.com",
+		Quota:       123,
+		Group:       "default",
+	}
+	require.NoError(t, db.Create(&user).Error)
+
+	ctx, recorder := newMangouJSONContext(t, http.MethodGet, "/v1/agent/auth/check", nil)
+	ctx.Set("id", user.Id)
+	ctx.Set("token_name", "agent:hermes-mangou")
+
+	MangouAgentAuthCheck(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	resp := decodeMangouResponse(t, recorder)
+	require.Equal(t, true, resp["success"])
+	data := resp["data"].(map[string]any)
+	require.Equal(t, "hermes-mangou", data["agent_id"])
+	require.Equal(t, "agent@example.com", data["email"])
+	require.EqualValues(t, 123, data["balance"])
 }
 
 func TestMangouAgentRegisterRejectsInvalidVerificationCode(t *testing.T) {
