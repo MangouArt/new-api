@@ -35,7 +35,7 @@ func setupMangouAgentTestDB(t *testing.T) *gorm.DB {
 	require.NoError(t, err)
 	model.DB = db
 	model.LOG_DB = db
-	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Token{}, &model.Task{}, &model.Log{}, &model.TopUp{}, &model.MangouProviderPricing{}))
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Token{}, &model.Task{}, &model.Log{}, &model.TopUp{}, &model.Channel{}, &model.Ability{}, &model.MangouProviderPricing{}))
 
 	t.Cleanup(func() {
 		sqlDB, err := db.DB()
@@ -425,6 +425,7 @@ func TestMangouAgentSubmitTaskCreatesAsyncImageTaskWithParameterPricing(t *testi
 	require.Equal(t, "bltai", string(task.Platform))
 	require.Equal(t, "bltai", task.Group)
 	require.Equal(t, "image.generate", task.Action)
+	require.NotZero(t, task.ChannelId)
 	require.EqualValues(t, 300, task.Quota)
 	require.EqualValues(t, model.TaskStatusSubmitted, task.Status)
 	require.NotNil(t, task.PrivateData.BillingContext)
@@ -443,8 +444,21 @@ func TestMangouAgentSubmitTaskCreatesAsyncImageTaskWithParameterPricing(t *testi
 	require.Equal(t, "bltai", consumeLog.Group)
 	require.Equal(t, 300, consumeLog.Quota)
 	require.Equal(t, 77, consumeLog.TokenId)
+	require.Equal(t, task.ChannelId, consumeLog.ChannelId)
+	require.NotEmpty(t, consumeLog.Ip)
+	require.Equal(t, 1, consumeLog.PromptTokens)
+	require.Equal(t, 1, consumeLog.CompletionTokens)
 	require.Contains(t, consumeLog.Other, "task_id")
 	require.Contains(t, consumeLog.Other, "pricing_params")
+
+	var channel model.Channel
+	require.NoError(t, db.First(&channel, task.ChannelId).Error)
+	require.Equal(t, "Mangou BLTAI image", channel.Name)
+	require.Equal(t, "nano-banana-2", channel.Models)
+	require.Equal(t, "bltai", channel.Group)
+
+	var ability model.Ability
+	require.NoError(t, db.Where("channel_id = ? AND model = ? AND `group` = ?", task.ChannelId, "nano-banana-2", "bltai").First(&ability).Error)
 }
 
 func TestMangouAgentSubmitTaskRejectsMissingProviderPricing(t *testing.T) {

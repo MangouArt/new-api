@@ -264,6 +264,7 @@ type RecordTaskBillingLogParams struct {
 	TokenId          int
 	UseTimeSeconds   int
 	Group            string
+	Ip               string
 	Other            map[string]interface{}
 }
 
@@ -293,6 +294,7 @@ func RecordTaskBillingLog(params RecordTaskBillingLogParams) {
 		ChannelId:        params.ChannelId,
 		TokenId:          params.TokenId,
 		Group:            params.Group,
+		Ip:               params.Ip,
 		Other:            common.MapToJsonStr(params.Other),
 	}
 	err := LOG_DB.Create(log).Error

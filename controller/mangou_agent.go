@@ -536,6 +536,8 @@ func MangouAgentSubmitTask(c *gin.Context) {
 		common.ApiErrorMsg(c, "authenticated user is required")
 		return
 	}
+	usingGroup := mangouAgentUsingGroup(c, req.Provider)
+	channelID := ensureMangouAgentProviderChannel(req.Provider, req.Type, req.Model, usingGroup)
 	if err := preConsumeMangouAgentQuota(c, userID, quota); err != nil {
 		common.ApiError(c, err)
 		return
@@ -569,7 +571,8 @@ func MangouAgentSubmitTask(c *gin.Context) {
 		TaskID:     taskID,
 		Platform:   constant.TaskPlatform(req.Provider),
 		UserId:     userID,
-		Group:      req.Provider,
+		Group:      usingGroup,
+		ChannelId:  channelID,
 		Quota:      quota,
 		Action:     req.Type + ".generate",
 		Status:     model.TaskStatusSubmitted,
@@ -651,12 +654,137 @@ func recordMangouAgentTaskConsumeLog(c *gin.Context, task *model.Task, req mango
 		TokenId:          task.PrivateData.TokenId,
 		UseTimeSeconds:   int(time.Since(startedAt).Seconds()),
 		Group:            task.Group,
+		Ip:               c.ClientIP(),
 		Other:            other,
 	})
 	model.UpdateUserUsedQuotaAndRequestCount(task.UserId, quota)
 	if task.ChannelId > 0 {
 		model.UpdateChannelUsedQuota(task.ChannelId, quota)
 	}
+}
+
+func mangouAgentUsingGroup(c *gin.Context, fallback string) string {
+	group := common.GetContextKeyString(c, constant.ContextKeyUsingGroup)
+	if group == "" {
+		group = strings.TrimSpace(c.GetString("group"))
+	}
+	if group == "" {
+		group = fallback
+	}
+	return group
+}
+
+func ensureMangouAgentProviderChannel(provider string, taskType string, modelName string, group string) int {
+	if model.DB == nil {
+		return 0
+	}
+	provider = strings.TrimSpace(strings.ToLower(provider))
+	modelName = strings.TrimSpace(modelName)
+	group = strings.TrimSpace(group)
+	if provider == "" || modelName == "" || group == "" {
+		return 0
+	}
+
+	name := fmt.Sprintf("Mangou %s %s", strings.ToUpper(provider), taskType)
+	var channel model.Channel
+	err := model.DB.Where("name = ?", name).First(&channel).Error
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		common.SysLog("failed to lookup mangou provider channel: " + err.Error())
+		return 0
+	}
+
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		baseURL := mangouProviderBaseURL(provider)
+		tag := "mangou:" + provider
+		weight := uint(100)
+		priority := int64(0)
+		autoBan := 0
+		channel = model.Channel{
+			Type:        constant.ChannelTypeCustom,
+			Key:         mangouProviderChannelKey(provider),
+			Status:      common.ChannelStatusEnabled,
+			Name:        name,
+			Weight:      &weight,
+			CreatedTime: common.GetTimestamp(),
+			TestTime:    common.GetTimestamp(),
+			BaseURL:     &baseURL,
+			Models:      modelName,
+			Group:       group,
+			Priority:    &priority,
+			AutoBan:     &autoBan,
+			Tag:         &tag,
+			Remark:      mangouStringPtr("Managed by Mangou Agent Gateway"),
+		}
+		if createErr := model.DB.Create(&channel).Error; createErr != nil {
+			common.SysLog("failed to create mangou provider channel: " + createErr.Error())
+			return 0
+		}
+		if abilityErr := channel.AddAbilities(nil); abilityErr != nil {
+			common.SysLog("failed to create mangou provider channel abilities: " + abilityErr.Error())
+		}
+		model.InitChannelCache()
+		return channel.Id
+	}
+
+	changed := false
+	if !mangouCSVContains(channel.Models, modelName) {
+		channel.Models = mangouAppendCSV(channel.Models, modelName)
+		changed = true
+	}
+	if !mangouCSVContains(channel.Group, group) {
+		channel.Group = mangouAppendCSV(channel.Group, group)
+		changed = true
+	}
+	if changed {
+		if saveErr := model.DB.Model(&channel).Select("models", "group").Updates(&channel).Error; saveErr != nil {
+			common.SysLog("failed to update mangou provider channel: " + saveErr.Error())
+		} else if abilityErr := channel.UpdateAbilities(nil); abilityErr != nil {
+			common.SysLog("failed to update mangou provider channel abilities: " + abilityErr.Error())
+		} else {
+			model.InitChannelCache()
+		}
+	}
+	return channel.Id
+}
+
+func mangouProviderChannelKey(provider string) string {
+	if key := mangouProviderAPIKey(provider); key != "" {
+		return key
+	}
+	return "managed-by-mangou-agent-gateway"
+}
+
+func mangouProviderBaseURL(provider string) string {
+	switch provider {
+	case "bltai":
+		return strings.TrimRight(common.GetEnvOrDefaultString("BLTAI_BASE_URL", "https://api.bltcy.ai/v1"), "/")
+	case "evolink":
+		return strings.TrimRight(common.GetEnvOrDefaultString("EVOLINK_BASE_URL", ""), "/")
+	case "kie":
+		return strings.TrimRight(common.GetEnvOrDefaultString("KIE_BASE_URL", "https://api.kie.ai"), "/")
+	default:
+		return ""
+	}
+}
+
+func mangouCSVContains(csv string, value string) bool {
+	for _, item := range strings.Split(csv, ",") {
+		if strings.TrimSpace(item) == value {
+			return true
+		}
+	}
+	return false
+}
+
+func mangouAppendCSV(csv string, value string) string {
+	if strings.TrimSpace(csv) == "" {
+		return value
+	}
+	return strings.TrimRight(csv, ",") + "," + value
+}
+
+func mangouStringPtr(value string) *string {
+	return &value
 }
 
 func MangouAgentGetTask(c *gin.Context) {
