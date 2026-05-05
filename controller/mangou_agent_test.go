@@ -12,6 +12,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/require"
@@ -194,6 +195,11 @@ func TestMangouAgentAuthCheckReturnsAgentContext(t *testing.T) {
 
 func TestMangouAgentRechargeQRCreatesDemoPayment(t *testing.T) {
 	db := setupMangouAgentTestDB(t)
+	originalServerAddress := system_setting.ServerAddress
+	system_setting.ServerAddress = "http://localhost:3000"
+	t.Cleanup(func() {
+		system_setting.ServerAddress = originalServerAddress
+	})
 	user := model.User{
 		Username:    "agentuser",
 		DisplayName: "agentuser",
@@ -224,8 +230,8 @@ func TestMangouAgentRechargeQRCreatesDemoPayment(t *testing.T) {
 	require.EqualValues(t, 100, data["amount"])
 	require.Equal(t, true, data["demo"])
 	require.NotEmpty(t, data["payment_id"])
-	require.Contains(t, data["payment_url"], "/v1/payments/demo-scan/")
-	require.Contains(t, data["qr_url"], "/v1/payments/")
+	require.Contains(t, data["payment_url"], "https://mangou-newapi.example.com/v1/payments/demo-scan/")
+	require.Contains(t, data["qr_url"], "https://mangou-newapi.example.com/v1/payments/")
 
 	var topUp model.TopUp
 	require.NoError(t, db.Where("trade_no = ?", data["payment_id"]).First(&topUp).Error)

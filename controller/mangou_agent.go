@@ -605,10 +605,18 @@ func normalizeMangouRechargeAmount(req mangouAgentRechargeRequest) (int64, strin
 }
 
 func mangouPublicBaseURL(c *gin.Context) string {
-	base := strings.TrimRight(system_setting.ServerAddress, "/")
-	if base != "" {
-		return base
+	requestBase := mangouRequestBaseURL(c)
+	configuredBase := strings.TrimRight(system_setting.ServerAddress, "/")
+	if configuredBase != "" && !mangouLooksLocalBaseURL(configuredBase) {
+		return configuredBase
 	}
+	if requestBase != "" {
+		return requestBase
+	}
+	return configuredBase
+}
+
+func mangouRequestBaseURL(c *gin.Context) string {
 	if c == nil || c.Request == nil {
 		return ""
 	}
@@ -624,6 +632,15 @@ func mangouPublicBaseURL(c *gin.Context) string {
 		proto = "https"
 	}
 	return strings.TrimRight(proto+"://"+host, "/")
+}
+
+func mangouLooksLocalBaseURL(baseURL string) bool {
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(parsed.Hostname())
+	return host == "localhost" || host == "127.0.0.1" || host == "::1"
 }
 
 func buildMangouDemoPaymentURL(baseURL string, paymentID string, returnURL string) string {
