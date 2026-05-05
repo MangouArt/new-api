@@ -33,20 +33,29 @@ Agent requests keep the upstream-facing fields:
 NewAPI maps them internally:
 
 ```text
-UsingGroup       = bltai
+UsingGroup       = NewAPI token/user group, e.g. auto or default
 Platform         = bltai
 Action           = image.generate
 OriginModelName  = mangou-image
 UpstreamModelName = nano-banana-2
 ```
 
-Provider groups:
+Provider routing must be configured in NewAPI native tables before agents submit tasks:
 
-- `bltai`
-- `kie`
-- `evolink`
+- `channels`: provider key, base_url, enabled status, supported models, enabled groups
+- `abilities`: group/model/channel routing
+- `models`: model metadata shown in `/console/models`
+- `mangou_provider_pricings`: provider/type pricing rules
 
-The group chooses channel routing and group-level quota multiplier. The upstream `model` remains a provider payload parameter and should not be the primary billing key.
+Use the root-protected sync endpoint after configuring provider bootstrap env vars or channel keys:
+
+```text
+POST /api/mangou/providers/sync
+```
+
+This endpoint upserts Mangou channel/model/ability rows. Runtime task submission only reads configured NewAPI rows; it does not create channels lazily. If a provider/model/group is missing, `/v1/agent/tasks` returns an actionable `success: false` error naming the missing provider/model/group.
+
+The token/user group chooses channel routing and group-level quota multiplier. The upstream `model` remains a provider payload parameter and is also registered in NewAPI's native model/ability tables so the admin console can show it.
 
 ## Async Task Lifecycle
 

@@ -58,6 +58,27 @@ type mangouAgentRechargeRequest struct {
 	ReturnURL string `json:"return_url"`
 }
 
+type mangouProviderChannelSpec struct {
+	Provider    string
+	TaskType    string
+	Name        string
+	BaseURL     string
+	APIKey      string
+	Models      []string
+	Groups      []string
+	Description string
+}
+
+type mangouProviderSyncResult struct {
+	Provider string   `json:"provider"`
+	Type     string   `json:"type"`
+	Channel  string   `json:"channel"`
+	Models   []string `json:"models"`
+	Groups   []string `json:"groups"`
+	Status   string   `json:"status"`
+	Message  string   `json:"message,omitempty"`
+}
+
 type mangouProviderPricingRule struct {
 	BaseQuota   int                           `json:"base_quota"`
 	Multipliers map[string]map[string]float64 `json:"multipliers"`
@@ -273,6 +294,8 @@ Supported official pricing rows currently include:
 - `+"`evolink`"+` video: Seedance 2.0 series
 
 Images and videos are asynchronous tasks. The submit response includes `+"`task_id`"+`, `+"`status`"+`, and `+"`estimated_quota`"+`.
+
+Provider and model routing must already be configured in NewAPI `+"`channels`"+`, `+"`abilities`"+`, and `+"`models`"+`. If the requested provider/model/group is not configured, the API returns `+"`success: false`"+` with a message naming the missing provider/model/group; do not guess or retry blindly.
 
 Poll until terminal status:
 
@@ -537,7 +560,12 @@ func MangouAgentSubmitTask(c *gin.Context) {
 		return
 	}
 	usingGroup := mangouAgentUsingGroup(c, req.Provider)
-	channelID := ensureMangouAgentProviderChannel(req.Provider, req.Type, req.Model, usingGroup)
+	channel, err := resolveMangouAgentProviderChannel(req.Provider, req.Type, req.Model, usingGroup)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	channelID := channel.Id
 	if err := preConsumeMangouAgentQuota(c, userID, quota); err != nil {
 		common.ApiError(c, err)
 		return
@@ -595,7 +623,7 @@ func MangouAgentSubmitTask(c *gin.Context) {
 		},
 		Data: dataBytes,
 	}
-	if upstream, attempted, err := submitMangouUpstreamTask(req); err != nil {
+	if upstream, attempted, err := submitMangouUpstreamTask(req, channel); err != nil {
 		refundMangouAgentQuota(c, userID, quota)
 		common.ApiError(c, err)
 		return
@@ -674,113 +702,277 @@ func mangouAgentUsingGroup(c *gin.Context, fallback string) string {
 	return group
 }
 
-func ensureMangouAgentProviderChannel(provider string, taskType string, modelName string, group string) int {
-	if model.DB == nil {
-		return 0
-	}
+func resolveMangouAgentProviderChannel(provider string, taskType string, modelName string, group string) (*model.Channel, error) {
 	provider = strings.TrimSpace(strings.ToLower(provider))
 	modelName = strings.TrimSpace(modelName)
 	group = strings.TrimSpace(group)
 	if provider == "" || modelName == "" || group == "" {
-		return 0
+		return nil, errors.New("provider, model and group are required to resolve a NewAPI channel")
 	}
 
-	name := fmt.Sprintf("Mangou %s %s", strings.ToUpper(provider), taskType)
-	var channel model.Channel
-	err := model.DB.Where("name = ?", name).First(&channel).Error
-	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-		common.SysLog("failed to lookup mangou provider channel: " + err.Error())
-		return 0
-	}
-
+	name := mangouProviderChannelName(provider, taskType)
+	tag := "mangou:" + provider
+	var ability model.Ability
+	err := model.DB.Joins("JOIN channels ON channels.id = abilities.channel_id").
+		Where(&model.Ability{Group: group, Model: modelName, Enabled: true}).
+		Where("channels.status = ?", common.ChannelStatusEnabled).
+		Where("(channels.tag = ? OR channels.name = ?)", tag, name).
+		Order("abilities.priority DESC, abilities.weight DESC").
+		First(&ability).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		baseURL := mangouProviderBaseURL(provider)
-		tag := "mangou:" + provider
-		weight := uint(100)
-		priority := int64(0)
-		autoBan := 0
+		return nil, fmt.Errorf("provider/model is not configured in NewAPI channels: provider=%s type=%s model=%s group=%s; ask an admin to run POST /api/mangou/providers/sync or configure channels/models manually", provider, taskType, modelName, group)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve NewAPI channel for provider=%s model=%s group=%s: %w", provider, modelName, group, err)
+	}
+	var channel model.Channel
+	if err := model.DB.First(&channel, ability.ChannelId).Error; err != nil {
+		return nil, fmt.Errorf("failed to load NewAPI channel %d for provider=%s model=%s group=%s: %w", ability.ChannelId, provider, modelName, group, err)
+	}
+	if strings.TrimSpace(channel.Key) == "" {
+		return nil, fmt.Errorf("NewAPI channel %d (%s) has no provider key configured", channel.Id, channel.Name)
+	}
+	if channel.BaseURL == nil || strings.TrimSpace(*channel.BaseURL) == "" {
+		return nil, fmt.Errorf("NewAPI channel %d (%s) has no base_url configured", channel.Id, channel.Name)
+	}
+	return &channel, nil
+}
+
+func MangouAdminSyncProviders(c *gin.Context) {
+	results := syncMangouProviderChannels()
+	created := 0
+	updated := 0
+	skipped := 0
+	for _, result := range results {
+		switch result.Status {
+		case "created":
+			created++
+		case "updated", "unchanged":
+			updated++
+		default:
+			skipped++
+		}
+	}
+	common.ApiSuccess(c, gin.H{
+		"created": created,
+		"updated": updated,
+		"skipped": skipped,
+		"results": results,
+	})
+}
+
+func syncMangouProviderChannels() []mangouProviderSyncResult {
+	specs := defaultMangouProviderChannelSpecs()
+	results := make([]mangouProviderSyncResult, 0, len(specs))
+	for _, spec := range specs {
+		results = append(results, syncMangouProviderChannel(spec))
+	}
+	model.InitChannelCache()
+	return results
+}
+
+func syncMangouProviderChannel(spec mangouProviderChannelSpec) mangouProviderSyncResult {
+	result := mangouProviderSyncResult{
+		Provider: spec.Provider,
+		Type:     spec.TaskType,
+		Channel:  spec.Name,
+		Models:   spec.Models,
+		Groups:   spec.Groups,
+	}
+	if len(spec.Models) == 0 || len(spec.Groups) == 0 {
+		result.Status = "skipped"
+		result.Message = "models and groups are required"
+		return result
+	}
+
+	var channel model.Channel
+	err := model.DB.Where("name = ?", spec.Name).First(&channel).Error
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		result.Status = "skipped"
+		result.Message = err.Error()
+		return result
+	}
+
+	key := strings.TrimSpace(spec.APIKey)
+	if !errors.Is(err, gorm.ErrRecordNotFound) && strings.TrimSpace(channel.Key) != "" {
+		key = strings.TrimSpace(channel.Key)
+	}
+	if key == "" {
+		result.Status = "skipped"
+		result.Message = "provider key is missing; configure the NewAPI channel key or set the bootstrap environment variable before sync"
+		return result
+	}
+
+	baseURL := strings.TrimRight(strings.TrimSpace(spec.BaseURL), "/")
+	if !errors.Is(err, gorm.ErrRecordNotFound) && channel.BaseURL != nil && strings.TrimSpace(*channel.BaseURL) != "" {
+		baseURL = strings.TrimRight(strings.TrimSpace(*channel.BaseURL), "/")
+	}
+	if baseURL == "" {
+		result.Status = "skipped"
+		result.Message = "base_url is missing"
+		return result
+	}
+
+	tag := "mangou:" + spec.Provider
+	weight := uint(100)
+	priority := int64(0)
+	autoBan := 0
+	modelsCSV := strings.Join(spec.Models, ",")
+	groupsCSV := strings.Join(spec.Groups, ",")
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		channel = model.Channel{
 			Type:        constant.ChannelTypeCustom,
-			Key:         mangouProviderChannelKey(provider),
+			Key:         key,
 			Status:      common.ChannelStatusEnabled,
-			Name:        name,
+			Name:        spec.Name,
 			Weight:      &weight,
 			CreatedTime: common.GetTimestamp(),
 			TestTime:    common.GetTimestamp(),
 			BaseURL:     &baseURL,
-			Models:      modelName,
-			Group:       group,
+			Models:      modelsCSV,
+			Group:       groupsCSV,
 			Priority:    &priority,
 			AutoBan:     &autoBan,
 			Tag:         &tag,
-			Remark:      mangouStringPtr("Managed by Mangou Agent Gateway"),
+			Remark:      mangouStringPtr(spec.Description),
 		}
 		if createErr := model.DB.Create(&channel).Error; createErr != nil {
-			common.SysLog("failed to create mangou provider channel: " + createErr.Error())
-			return 0
+			result.Status = "skipped"
+			result.Message = createErr.Error()
+			return result
 		}
-		if abilityErr := channel.AddAbilities(nil); abilityErr != nil {
-			common.SysLog("failed to create mangou provider channel abilities: " + abilityErr.Error())
+		result.Status = "created"
+	} else {
+		channel.Type = constant.ChannelTypeCustom
+		channel.Status = common.ChannelStatusEnabled
+		channel.Key = key
+		channel.BaseURL = &baseURL
+		channel.Models = modelsCSV
+		channel.Group = groupsCSV
+		channel.Weight = &weight
+		channel.Priority = &priority
+		channel.AutoBan = &autoBan
+		channel.Tag = &tag
+		channel.Remark = mangouStringPtr(spec.Description)
+		if saveErr := model.DB.Model(&channel).Select("type", "status", "key", "base_url", "models", "group", "weight", "priority", "auto_ban", "tag", "remark").Updates(&channel).Error; saveErr != nil {
+			result.Status = "skipped"
+			result.Message = saveErr.Error()
+			return result
 		}
-		model.InitChannelCache()
-		return channel.Id
+		result.Status = "updated"
 	}
-
-	changed := false
-	if !mangouCSVContains(channel.Models, modelName) {
-		channel.Models = mangouAppendCSV(channel.Models, modelName)
-		changed = true
+	if abilityErr := channel.UpdateAbilities(nil); abilityErr != nil {
+		result.Status = "skipped"
+		result.Message = abilityErr.Error()
+		return result
 	}
-	if !mangouCSVContains(channel.Group, group) {
-		channel.Group = mangouAppendCSV(channel.Group, group)
-		changed = true
-	}
-	if changed {
-		if saveErr := model.DB.Model(&channel).Select("models", "group").Updates(&channel).Error; saveErr != nil {
-			common.SysLog("failed to update mangou provider channel: " + saveErr.Error())
-		} else if abilityErr := channel.UpdateAbilities(nil); abilityErr != nil {
-			common.SysLog("failed to update mangou provider channel abilities: " + abilityErr.Error())
-		} else {
-			model.InitChannelCache()
-		}
-	}
-	return channel.Id
-}
-
-func mangouProviderChannelKey(provider string) string {
-	if key := mangouProviderAPIKey(provider); key != "" {
-		return key
-	}
-	return "managed-by-mangou-agent-gateway"
-}
-
-func mangouProviderBaseURL(provider string) string {
-	switch provider {
-	case "bltai":
-		return strings.TrimRight(common.GetEnvOrDefaultString("BLTAI_BASE_URL", "https://api.bltcy.ai/v1"), "/")
-	case "evolink":
-		return strings.TrimRight(common.GetEnvOrDefaultString("EVOLINK_BASE_URL", ""), "/")
-	case "kie":
-		return strings.TrimRight(common.GetEnvOrDefaultString("KIE_BASE_URL", "https://api.kie.ai"), "/")
-	default:
-		return ""
-	}
-}
-
-func mangouCSVContains(csv string, value string) bool {
-	for _, item := range strings.Split(csv, ",") {
-		if strings.TrimSpace(item) == value {
-			return true
+	for _, modelName := range spec.Models {
+		if err := ensureMangouModelMeta(modelName, spec); err != nil {
+			common.SysLog("failed to ensure mangou model meta: " + err.Error())
 		}
 	}
-	return false
+	return result
 }
 
-func mangouAppendCSV(csv string, value string) string {
-	if strings.TrimSpace(csv) == "" {
-		return value
+func ensureMangouModelMeta(modelName string, spec mangouProviderChannelSpec) error {
+	var existing model.Model
+	err := model.DB.Where("model_name = ?", modelName).First(&existing).Error
+	if err == nil {
+		return nil
 	}
-	return strings.TrimRight(csv, ",") + "," + value
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
+	}
+	vendorID, err := ensureMangouVendor(spec.Provider)
+	if err != nil {
+		return err
+	}
+	now := common.GetTimestamp()
+	return model.DB.Create(&model.Model{
+		ModelName:    modelName,
+		Description:  spec.Description,
+		Tags:         "mangou," + spec.Provider + "," + spec.TaskType,
+		VendorID:     vendorID,
+		Status:       1,
+		SyncOfficial: 0,
+		CreatedTime:  now,
+		UpdatedTime:  now,
+		NameRule:     model.NameRuleExact,
+	}).Error
+}
+
+func ensureMangouVendor(provider string) (int, error) {
+	name := "Mangou " + strings.ToUpper(provider)
+	var vendor model.Vendor
+	err := model.DB.Where("name = ?", name).First(&vendor).Error
+	if err == nil {
+		return vendor.Id, nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return 0, err
+	}
+	now := common.GetTimestamp()
+	vendor = model.Vendor{
+		Name:        name,
+		Description: "Mangou managed " + strings.ToUpper(provider) + " provider",
+		Status:      1,
+		CreatedTime: now,
+		UpdatedTime: now,
+	}
+	if err := model.DB.Create(&vendor).Error; err != nil {
+		return 0, err
+	}
+	return vendor.Id, nil
+}
+
+func defaultMangouProviderChannelSpecs() []mangouProviderChannelSpec {
+	groups := []string{"auto", "default"}
+	return []mangouProviderChannelSpec{
+		{
+			Provider:    "bltai",
+			TaskType:    "image",
+			Name:        mangouProviderChannelName("bltai", "image"),
+			BaseURL:     strings.TrimRight(common.GetEnvOrDefaultString("BLTAI_BASE_URL", "https://api.bltcy.ai/v1"), "/"),
+			APIKey:      strings.TrimSpace(common.GetEnvOrDefaultString("BLTAI_API_KEY", "")),
+			Models:      []string{"gpt-image-2"},
+			Groups:      groups,
+			Description: "Mangou BLTAI image provider",
+		},
+		{
+			Provider:    "kie",
+			TaskType:    "video",
+			Name:        mangouProviderChannelName("kie", "video"),
+			BaseURL:     strings.TrimRight(common.GetEnvOrDefaultString("KIE_BASE_URL", "https://api.kie.ai"), "/"),
+			APIKey:      strings.TrimSpace(common.GetEnvOrDefaultString("KIE_API_KEY", "")),
+			Models:      []string{"doubao-seedance-2-0-260128", "doubao-seedance-2-0-fast-260128"},
+			Groups:      groups,
+			Description: "Mangou KIE video provider",
+		},
+		{
+			Provider:    "evolink",
+			TaskType:    "image",
+			Name:        mangouProviderChannelName("evolink", "image"),
+			BaseURL:     strings.TrimRight(common.GetEnvOrDefaultString("EVOLINK_BASE_URL", ""), "/"),
+			APIKey:      strings.TrimSpace(common.GetEnvOrDefaultString("EVOLINK_API_KEY", "")),
+			Models:      []string{"gpt-image-2"},
+			Groups:      groups,
+			Description: "Mangou Evolink image provider",
+		},
+		{
+			Provider:    "evolink",
+			TaskType:    "video",
+			Name:        mangouProviderChannelName("evolink", "video"),
+			BaseURL:     strings.TrimRight(common.GetEnvOrDefaultString("EVOLINK_BASE_URL", ""), "/"),
+			APIKey:      strings.TrimSpace(common.GetEnvOrDefaultString("EVOLINK_API_KEY", "")),
+			Models:      []string{"doubao-seedance-2-0-260128", "doubao-seedance-2-0-fast-260128"},
+			Groups:      groups,
+			Description: "Mangou Evolink video provider",
+		},
+	}
+}
+
+func mangouProviderChannelName(provider string, taskType string) string {
+	return fmt.Sprintf("Mangou %s %s", strings.ToUpper(provider), taskType)
 }
 
 func mangouStringPtr(value string) *string {
@@ -988,20 +1180,26 @@ func mangouQRCodeSVG(target string) (string, error) {
 	return b.String(), nil
 }
 
-func submitMangouUpstreamTask(req mangouAgentTaskRequest) (*mangouUpstreamTaskResult, bool, error) {
+func submitMangouUpstreamTask(req mangouAgentTaskRequest, channel *model.Channel) (*mangouUpstreamTaskResult, bool, error) {
+	if channel == nil {
+		return nil, false, errors.New("NewAPI provider channel is required")
+	}
+	key := strings.TrimSpace(channel.Key)
+	baseURL := ""
+	if channel.BaseURL != nil {
+		baseURL = strings.TrimSpace(*channel.BaseURL)
+	}
+	if key == "" {
+		return nil, true, fmt.Errorf("NewAPI channel %d (%s) has no provider key configured", channel.Id, channel.Name)
+	}
+	if baseURL == "" {
+		return nil, true, fmt.Errorf("NewAPI channel %d (%s) has no base_url configured", channel.Id, channel.Name)
+	}
 	switch req.Provider {
 	case "evolink", "bltai":
-		key := mangouProviderAPIKey(req.Provider)
-		if key == "" {
-			return nil, false, nil
-		}
-		return submitMangouUnifiedTask(req, key)
+		return submitMangouUnifiedTask(req, key, baseURL)
 	case "kie":
-		key := mangouProviderAPIKey(req.Provider)
-		if key == "" {
-			return nil, false, nil
-		}
-		return submitMangouKIERunwayTask(req, key)
+		return submitMangouKIERunwayTask(req, key, baseURL)
 	default:
 		return nil, false, nil
 	}
@@ -1009,25 +1207,29 @@ func submitMangouUpstreamTask(req mangouAgentTaskRequest) (*mangouUpstreamTaskRe
 
 func pollMangouUpstreamTask(task *model.Task) (*mangouUpstreamTaskResult, error) {
 	provider := string(task.Platform)
+	channel, err := model.CacheGetChannel(task.ChannelId)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load NewAPI channel %d for task %s: %w", task.ChannelId, task.TaskID, err)
+	}
+	key := strings.TrimSpace(channel.Key)
+	baseURL := ""
+	if channel.BaseURL != nil {
+		baseURL = strings.TrimSpace(*channel.BaseURL)
+	}
+	if key == "" || baseURL == "" {
+		return nil, fmt.Errorf("NewAPI channel %d (%s) is missing key or base_url", channel.Id, channel.Name)
+	}
 	switch provider {
 	case "evolink", "bltai":
-		key := mangouProviderAPIKey(provider)
-		if key == "" {
-			return &mangouUpstreamTaskResult{}, nil
-		}
-		return pollMangouUnifiedTask(provider, task.PrivateData.UpstreamTaskID, key)
+		return pollMangouUnifiedTask(provider, task.PrivateData.UpstreamTaskID, key, baseURL)
 	case "kie":
-		key := mangouProviderAPIKey(provider)
-		if key == "" {
-			return &mangouUpstreamTaskResult{}, nil
-		}
-		return pollMangouKIERunwayTask(task.PrivateData.UpstreamTaskID, key)
+		return pollMangouKIERunwayTask(task.PrivateData.UpstreamTaskID, key, baseURL)
 	default:
 		return &mangouUpstreamTaskResult{}, nil
 	}
 }
 
-func submitMangouUnifiedTask(req mangouAgentTaskRequest, key string) (*mangouUpstreamTaskResult, bool, error) {
+func submitMangouUnifiedTask(req mangouAgentTaskRequest, key string, baseURL string) (*mangouUpstreamTaskResult, bool, error) {
 	payload := map[string]any{}
 	for k, v := range req.Params {
 		payload[k] = v
@@ -1043,7 +1245,7 @@ func submitMangouUnifiedTask(req mangouAgentTaskRequest, key string) (*mangouUps
 	if err != nil {
 		return nil, true, err
 	}
-	respBody, err := doMangouProviderJSON(http.MethodPost, mangouUnifiedURL(req.Provider, path), key, body)
+	respBody, err := doMangouProviderJSON(http.MethodPost, mangouUnifiedURL(baseURL, path), key, body)
 	if err != nil {
 		return nil, true, err
 	}
@@ -1070,8 +1272,8 @@ func submitMangouUnifiedTask(req mangouAgentTaskRequest, key string) (*mangouUps
 	}, true, nil
 }
 
-func pollMangouUnifiedTask(provider string, upstreamTaskID string, key string) (*mangouUpstreamTaskResult, error) {
-	respBody, err := doMangouProviderJSON(http.MethodGet, mangouUnifiedURL(provider, "/v1/tasks/"+upstreamTaskID), key, nil)
+func pollMangouUnifiedTask(provider string, upstreamTaskID string, key string, baseURL string) (*mangouUpstreamTaskResult, error) {
+	respBody, err := doMangouProviderJSON(http.MethodGet, mangouUnifiedURL(baseURL, "/v1/tasks/"+upstreamTaskID), key, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -1109,7 +1311,7 @@ func firstMangouUnifiedResultURL(parsed mangouUnifiedTaskResponse) string {
 	return ""
 }
 
-func submitMangouKIERunwayTask(req mangouAgentTaskRequest, key string) (*mangouUpstreamTaskResult, bool, error) {
+func submitMangouKIERunwayTask(req mangouAgentTaskRequest, key string, baseURL string) (*mangouUpstreamTaskResult, bool, error) {
 	if req.Type != "video" {
 		return nil, true, errors.New("kie runtime currently supports video tasks")
 	}
@@ -1122,7 +1324,7 @@ func submitMangouKIERunwayTask(req mangouAgentTaskRequest, key string) (*mangouU
 	if err != nil {
 		return nil, true, err
 	}
-	respBody, err := doMangouProviderJSON(http.MethodPost, mangouKIEURL("/api/v1/runway/generate"), key, body)
+	respBody, err := doMangouProviderJSON(http.MethodPost, mangouKIEURL(baseURL, "/api/v1/runway/generate"), key, body)
 	if err != nil {
 		return nil, true, err
 	}
@@ -1147,8 +1349,8 @@ func submitMangouKIERunwayTask(req mangouAgentTaskRequest, key string) (*mangouU
 	}, true, nil
 }
 
-func pollMangouKIERunwayTask(upstreamTaskID string, key string) (*mangouUpstreamTaskResult, error) {
-	respBody, err := doMangouProviderJSON(http.MethodGet, mangouKIEURL("/api/v1/runway/record-detail?taskId="+upstreamTaskID), key, nil)
+func pollMangouKIERunwayTask(upstreamTaskID string, key string, baseURL string) (*mangouUpstreamTaskResult, error) {
+	respBody, err := doMangouProviderJSON(http.MethodGet, mangouKIEURL(baseURL, "/api/v1/runway/record-detail?taskId="+upstreamTaskID), key, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -1209,45 +1411,16 @@ func mangouRawJSONValue(raw []byte) any {
 	return string(raw)
 }
 
-func mangouProviderAPIKey(provider string) string {
-	switch provider {
-	case "bltai":
-		return strings.TrimSpace(common.GetEnvOrDefaultString("BLTAI_API_KEY", ""))
-	case "evolink":
-		return strings.TrimSpace(common.GetEnvOrDefaultString("EVOLINK_API_KEY", ""))
-	case "kie":
-		return strings.TrimSpace(common.GetEnvOrDefaultString("KIE_API_KEY", ""))
-	default:
-		return ""
-	}
-}
-
-func mangouUnifiedURL(provider string, path string) string {
-	base := ""
-	switch provider {
-	case "bltai":
-		base = common.GetEnvOrDefaultString("BLTAI_BASE_URL", "")
-		if base == "" {
-			base = "https://api.bltcy.ai/v1"
-		}
-	case "evolink":
-		base = common.GetEnvOrDefaultString("EVOLINK_BASE_URL", "")
-		if base == "" {
-			base = "https://api.evolink.ai"
-		}
-	}
-	base = strings.TrimRight(base, "/")
+func mangouUnifiedURL(baseURL string, path string) string {
+	base := strings.TrimRight(baseURL, "/")
 	if strings.HasSuffix(base, "/v1") && strings.HasPrefix(path, "/v1/") {
 		path = strings.TrimPrefix(path, "/v1")
 	}
 	return base + path
 }
 
-func mangouKIEURL(path string) string {
-	base := strings.TrimRight(common.GetEnvOrDefaultString("KIE_BASE_URL", ""), "/")
-	if base == "" {
-		base = "https://api.kie.ai"
-	}
+func mangouKIEURL(baseURL string, path string) string {
+	base := strings.TrimRight(baseURL, "/")
 	return base + path
 }
 

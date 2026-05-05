@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting/system_setting"
@@ -35,7 +36,7 @@ func setupMangouAgentTestDB(t *testing.T) *gorm.DB {
 	require.NoError(t, err)
 	model.DB = db
 	model.LOG_DB = db
-	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Token{}, &model.Task{}, &model.Log{}, &model.TopUp{}, &model.Channel{}, &model.Ability{}, &model.MangouProviderPricing{}))
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Token{}, &model.Task{}, &model.Log{}, &model.TopUp{}, &model.Channel{}, &model.Ability{}, &model.Model{}, &model.Vendor{}, &model.MangouProviderPricing{}))
 
 	t.Cleanup(func() {
 		sqlDB, err := db.DB()
@@ -56,6 +57,32 @@ func seedMangouPricing(t *testing.T, db *gorm.DB, provider string, taskType stri
 		Enabled:         true,
 	}
 	require.NoError(t, db.Create(&pricing).Error)
+}
+
+func seedMangouChannel(t *testing.T, db *gorm.DB, provider string, taskType string, baseURL string, apiKey string, groups []string, models []string) model.Channel {
+	t.Helper()
+	weight := uint(100)
+	priority := int64(0)
+	autoBan := 0
+	tag := "mangou:" + provider
+	channel := model.Channel{
+		Type:        constant.ChannelTypeCustom,
+		Key:         apiKey,
+		Status:      common.ChannelStatusEnabled,
+		Name:        mangouProviderChannelName(provider, taskType),
+		Weight:      &weight,
+		CreatedTime: common.GetTimestamp(),
+		TestTime:    common.GetTimestamp(),
+		BaseURL:     &baseURL,
+		Models:      strings.Join(models, ","),
+		Group:       strings.Join(groups, ","),
+		Priority:    &priority,
+		AutoBan:     &autoBan,
+		Tag:         &tag,
+	}
+	require.NoError(t, db.Create(&channel).Error)
+	require.NoError(t, channel.AddAbilities(nil))
+	return channel
 }
 
 func newMangouJSONContext(t *testing.T, method string, target string, body any) (*gin.Context, *httptest.ResponseRecorder) {
@@ -381,6 +408,14 @@ func TestMangouAgentRegisterRejectsInvalidVerificationCode(t *testing.T) {
 func TestMangouAgentSubmitTaskCreatesAsyncImageTaskWithParameterPricing(t *testing.T) {
 	db := setupMangouAgentTestDB(t)
 	seedMangouPricing(t, db, "bltai", "image", 100, `{"image_size":{"1K":1,"2K":2},"quality":{"standard":1,"hd":1.5}}`)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "Bearer test-bltai-key", r.Header.Get("Authorization"))
+		require.Equal(t, "/v1/images/generations", r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"remote-image-task","status":"pending","progress":0}`))
+	}))
+	defer server.Close()
+	seedMangouChannel(t, db, "bltai", "image", server.URL+"/v1", "test-bltai-key", []string{"default"}, []string{"nano-banana-2"})
 
 	user := model.User{
 		Username:    "agentuser",
@@ -407,6 +442,7 @@ func TestMangouAgentSubmitTaskCreatesAsyncImageTaskWithParameterPricing(t *testi
 	ctx.Set("token_id", 77)
 	ctx.Set("token_key", "test-token")
 	ctx.Set("token_unlimited_quota", true)
+	ctx.Set("group", "default")
 
 	MangouAgentSubmitTask(ctx)
 
@@ -423,7 +459,7 @@ func TestMangouAgentSubmitTaskCreatesAsyncImageTaskWithParameterPricing(t *testi
 	var task model.Task
 	require.NoError(t, db.Where("task_id = ?", data["task_id"]).First(&task).Error)
 	require.Equal(t, "bltai", string(task.Platform))
-	require.Equal(t, "bltai", task.Group)
+	require.Equal(t, "default", task.Group)
 	require.Equal(t, "image.generate", task.Action)
 	require.NotZero(t, task.ChannelId)
 	require.EqualValues(t, 300, task.Quota)
@@ -441,7 +477,7 @@ func TestMangouAgentSubmitTaskCreatesAsyncImageTaskWithParameterPricing(t *testi
 	var consumeLog model.Log
 	require.NoError(t, db.Where("user_id = ? AND type = ?", user.Id, model.LogTypeConsume).First(&consumeLog).Error)
 	require.Equal(t, "nano-banana-2", consumeLog.ModelName)
-	require.Equal(t, "bltai", consumeLog.Group)
+	require.Equal(t, "default", consumeLog.Group)
 	require.Equal(t, 300, consumeLog.Quota)
 	require.Equal(t, 77, consumeLog.TokenId)
 	require.Equal(t, task.ChannelId, consumeLog.ChannelId)
@@ -455,10 +491,10 @@ func TestMangouAgentSubmitTaskCreatesAsyncImageTaskWithParameterPricing(t *testi
 	require.NoError(t, db.First(&channel, task.ChannelId).Error)
 	require.Equal(t, "Mangou BLTAI image", channel.Name)
 	require.Equal(t, "nano-banana-2", channel.Models)
-	require.Equal(t, "bltai", channel.Group)
+	require.Equal(t, "default", channel.Group)
 
 	var ability model.Ability
-	require.NoError(t, db.Where("channel_id = ? AND model = ? AND `group` = ?", task.ChannelId, "nano-banana-2", "bltai").First(&ability).Error)
+	require.NoError(t, db.Where("channel_id = ? AND model = ? AND `group` = ?", task.ChannelId, "nano-banana-2", "default").First(&ability).Error)
 }
 
 func TestMangouAgentSubmitTaskRejectsMissingProviderPricing(t *testing.T) {
@@ -477,6 +513,61 @@ func TestMangouAgentSubmitTaskRejectsMissingProviderPricing(t *testing.T) {
 	require.Equal(t, http.StatusOK, recorder.Code)
 	resp := decodeMangouResponse(t, recorder)
 	require.Equal(t, false, resp["success"])
+}
+
+func TestMangouAgentSubmitTaskRejectsUnconfiguredProviderChannel(t *testing.T) {
+	db := setupMangouAgentTestDB(t)
+	seedMangouPricing(t, db, "bltai", "image", 100, "")
+
+	user := model.User{Username: "agentuser", Role: common.RoleCommonUser, Status: common.UserStatusEnabled, Quota: 1000, Group: "default"}
+	require.NoError(t, db.Create(&user).Error)
+
+	ctx, recorder := newMangouJSONContext(t, http.MethodPost, "/v1/agent/tasks", map[string]any{
+		"type":     "image",
+		"provider": "bltai",
+		"model":    "gpt-image-2",
+		"prompt":   "A mango robot.",
+	})
+	ctx.Set("id", user.Id)
+	ctx.Set("token_unlimited_quota", true)
+	ctx.Set("group", "default")
+
+	MangouAgentSubmitTask(ctx)
+	require.Equal(t, http.StatusOK, recorder.Code)
+	resp := decodeMangouResponse(t, recorder)
+	require.Equal(t, false, resp["success"])
+	require.Contains(t, resp["message"], "provider/model is not configured")
+	require.Contains(t, resp["message"], "provider=bltai")
+	require.Contains(t, resp["message"], "model=gpt-image-2")
+	require.Contains(t, resp["message"], "group=default")
+}
+
+func TestMangouAdminSyncProvidersCreatesChannelsAbilitiesAndModels(t *testing.T) {
+	db := setupMangouAgentTestDB(t)
+	t.Setenv("BLTAI_API_KEY", "test-bltai-key")
+	t.Setenv("BLTAI_BASE_URL", "https://example.test/v1")
+
+	ctx, recorder := newMangouJSONContext(t, http.MethodPost, "/api/mangou/providers/sync", nil)
+
+	MangouAdminSyncProviders(ctx)
+	require.Equal(t, http.StatusOK, recorder.Code)
+	resp := decodeMangouResponse(t, recorder)
+	require.Equal(t, true, resp["success"])
+
+	var channel model.Channel
+	require.NoError(t, db.Where("name = ?", "Mangou BLTAI image").First(&channel).Error)
+	require.Equal(t, "test-bltai-key", channel.Key)
+	require.Equal(t, "https://example.test/v1", *channel.BaseURL)
+	require.Contains(t, channel.Models, "gpt-image-2")
+	require.Contains(t, channel.Group, "auto")
+	require.Contains(t, channel.Group, "default")
+
+	var ability model.Ability
+	require.NoError(t, db.Where("channel_id = ? AND model = ? AND `group` = ?", channel.Id, "gpt-image-2", "auto").First(&ability).Error)
+
+	var meta model.Model
+	require.NoError(t, db.Where("model_name = ?", "gpt-image-2").First(&meta).Error)
+	require.Equal(t, 0, meta.SyncOfficial)
 }
 
 func TestMangouProviderPricingUsesDatabaseOnly(t *testing.T) {
@@ -556,7 +647,6 @@ func TestMangouTaskQuotaUsesImagePricingTier(t *testing.T) {
 func TestMangouAgentSubmitTaskSubmitsUnifiedProviderTask(t *testing.T) {
 	db := setupMangouAgentTestDB(t)
 	seedMangouPricing(t, db, "evolink", "image", 100, "")
-	t.Setenv("EVOLINK_API_KEY", "test-evolink-key")
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, "Bearer test-evolink-key", r.Header.Get("Authorization"))
@@ -581,7 +671,7 @@ func TestMangouAgentSubmitTaskSubmitsUnifiedProviderTask(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	t.Setenv("EVOLINK_BASE_URL", server.URL)
+	seedMangouChannel(t, db, "evolink", "image", server.URL, "test-evolink-key", []string{"default"}, []string{"gemini-3.1-flash-image-preview"})
 
 	user := model.User{Username: "agentuser", Role: common.RoleCommonUser, Status: common.UserStatusEnabled, Quota: 1000, Group: "default"}
 	require.NoError(t, db.Create(&user).Error)
@@ -597,6 +687,7 @@ func TestMangouAgentSubmitTaskSubmitsUnifiedProviderTask(t *testing.T) {
 	})
 	ctx.Set("id", user.Id)
 	ctx.Set("token_unlimited_quota", true)
+	ctx.Set("group", "default")
 
 	MangouAgentSubmitTask(ctx)
 	require.Equal(t, http.StatusOK, recorder.Code)
@@ -624,7 +715,6 @@ func TestMangouAgentSubmitTaskSubmitsUnifiedProviderTask(t *testing.T) {
 func TestMangouAgentSubmitTaskAcceptsOpenAICompatibleImageResponse(t *testing.T) {
 	db := setupMangouAgentTestDB(t)
 	seedMangouPricing(t, db, "bltai", "image", 100, "")
-	t.Setenv("BLTAI_API_KEY", "test-bltai-key")
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, "Bearer test-bltai-key", r.Header.Get("Authorization"))
@@ -634,7 +724,7 @@ func TestMangouAgentSubmitTaskAcceptsOpenAICompatibleImageResponse(t *testing.T)
 		_, _ = w.Write([]byte(`{"created":1777821713,"data":[{"url":"https://cdn.example/sync-image.jpg"}],"model":"nano-banana-pro"}`))
 	}))
 	defer server.Close()
-	t.Setenv("BLTAI_BASE_URL", server.URL+"/v1")
+	seedMangouChannel(t, db, "bltai", "image", server.URL+"/v1", "test-bltai-key", []string{"default"}, []string{"nano-banana-2"})
 
 	user := model.User{Username: "agentuser", Role: common.RoleCommonUser, Status: common.UserStatusEnabled, Quota: 1000, Group: "default"}
 	require.NoError(t, db.Create(&user).Error)
@@ -647,6 +737,7 @@ func TestMangouAgentSubmitTaskAcceptsOpenAICompatibleImageResponse(t *testing.T)
 	})
 	ctx.Set("id", user.Id)
 	ctx.Set("token_unlimited_quota", true)
+	ctx.Set("group", "default")
 
 	MangouAgentSubmitTask(ctx)
 	require.Equal(t, http.StatusOK, recorder.Code)
@@ -665,7 +756,6 @@ func TestMangouAgentSubmitTaskAcceptsOpenAICompatibleImageResponse(t *testing.T)
 func TestMangouAgentSubmitTaskSubmitsKIERunwayVideoTask(t *testing.T) {
 	db := setupMangouAgentTestDB(t)
 	seedMangouPricing(t, db, "kie", "video", 200, "")
-	t.Setenv("KIE_API_KEY", "test-kie-key")
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, "Bearer test-kie-key", r.Header.Get("Authorization"))
@@ -688,7 +778,7 @@ func TestMangouAgentSubmitTaskSubmitsKIERunwayVideoTask(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	t.Setenv("KIE_BASE_URL", server.URL)
+	seedMangouChannel(t, db, "kie", "video", server.URL, "test-kie-key", []string{"default"}, []string{"runway"})
 
 	user := model.User{Username: "agentuser", Role: common.RoleCommonUser, Status: common.UserStatusEnabled, Quota: 1000, Group: "default"}
 	require.NoError(t, db.Create(&user).Error)
@@ -705,6 +795,7 @@ func TestMangouAgentSubmitTaskSubmitsKIERunwayVideoTask(t *testing.T) {
 	})
 	ctx.Set("id", user.Id)
 	ctx.Set("token_unlimited_quota", true)
+	ctx.Set("group", "default")
 
 	MangouAgentSubmitTask(ctx)
 	require.Equal(t, http.StatusOK, recorder.Code)

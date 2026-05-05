@@ -37,4 +37,11 @@ func SetMangouAgentRouter(router *gin.Engine) {
 	router.GET("/v1/payments/:payment_id/qr.svg", controller.MangouPaymentQRSVG)
 	router.HEAD("/v1/payments/:payment_id/qr.svg", controller.MangouPaymentQRSVG)
 	router.GET("/v1/payments/demo-scan/:payment_id", controller.MangouDemoPaymentScan)
+
+	adminRouter := router.Group("/api/mangou")
+	adminRouter.Use(middleware.RouteTag("api"))
+	adminRouter.Use(middleware.RootAuth())
+	{
+		adminRouter.POST("/providers/sync", controller.MangouAdminSyncProviders)
+	}
 }
