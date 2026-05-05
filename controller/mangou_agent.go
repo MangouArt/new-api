@@ -110,13 +110,25 @@ type mangouKIERunwayRecordResponse struct {
 func MangouAgentSkill(c *gin.Context) {
 	c.Data(http.StatusOK, "text/markdown; charset=utf-8", []byte(`# Mangou NewAPI Agent Skill
 
-Use this NewAPI gateway for Mangou image and video tasks.
+Use this NewAPI gateway for Mangou image and video tasks. All protected Agent Gateway endpoints use `+"`Authorization: Bearer ${BILLING_TOKEN}`"+`.
+
+## Token Boundary
+
+- `+"`BILLING_TOKEN`"+` is the NewAPI Agent Gateway token.
+- `+"`BILLING_TOKEN`"+` is not a provider API key.
+- `+"`BILLING_TOKEN`"+` is not a TikHub `+"`TIKHUB_API_KEY`"+`, MCP session ID, OpenAI key, BLTAI key, KIE key, or Evolink key.
+- Never print the full token, never commit it, and never log raw registration responses containing it.
 
 ## Register
 
+If `+"`BILLING_TOKEN`"+` is missing, register with the user's email.
+
 1. Request an email code:
 
+`+"```http"+`
 POST /v1/agents/register/email-code
+Content-Type: application/json
+`+"```"+`
 
 Body:
 
@@ -128,7 +140,10 @@ Body:
 
 2. Register with email and code:
 
+`+"```http"+`
 POST /v1/agents/register
+Content-Type: application/json
+`+"```"+`
 
 Body:
 
@@ -140,23 +155,37 @@ Body:
 }
 `+"```"+`
 
-Store the returned `+"`billing_token`"+` as `+"`BILLING_TOKEN`"+` and send it as `+"`Authorization: Bearer ${BILLING_TOKEN}`"+`.
+The field name is `+"`verification_code`"+`. Do not use `+"`code`"+` or `+"`email_code`"+`.
+
+Store the returned full `+"`billing_token`"+` as `+"`BILLING_TOKEN`"+`. The `+"`token_preview`"+` field is only for display and cannot be used for authentication.
 
 3. Verify the token:
 
-GET /v1/agent/auth/check
+`+"```bash"+`
+curl -sS "`+strings.TrimSuffix(system_setting.ServerAddress, "/")+`/v1/agent/auth/check" \
+  -H "Authorization: Bearer ${BILLING_TOKEN}"
+`+"```"+`
 
-Use header `+"`Authorization: Bearer ${BILLING_TOKEN}`"+`.
+Expected success includes `+"`agent_id`"+`, `+"`user_id`"+`, `+"`balance`"+`, `+"`quota`"+`, and `+"`currency`"+`.
 
 ## Balance And Demo Recharge
 
 Check balance:
 
-GET /v1/agent/balance
+`+"```bash"+`
+curl -sS "`+strings.TrimSuffix(system_setting.ServerAddress, "/")+`/v1/agent/balance" \
+  -H "Authorization: Bearer ${BILLING_TOKEN}"
+`+"```"+`
+
+`+"`/v1/agent/credits`"+` is an alias for `+"`/v1/agent/balance`"+`.
 
 Request a demo recharge QR:
 
+`+"```http"+`
 POST /v1/agent/recharge-qr
+Authorization: Bearer ${BILLING_TOKEN}
+Content-Type: application/json
+`+"```"+`
 
 Body:
 
@@ -164,15 +193,37 @@ Body:
 {
   "agent_id": "mangou-agent",
   "tier": "gems_100",
-  "amount": 100
+  "amount": 100,
+  "return_url": "`+strings.TrimSuffix(system_setting.ServerAddress, "/")+`"
 }
 `+"```"+`
 
-The response includes `+"`payment_url`"+` and `+"`qr_url`"+`. Show the QR code or payment URL to the user. When the user opens the demo scan URL, NewAPI marks the payment paid and credits the account. Recheck `+"`/v1/agent/balance`"+` before submitting a task.
+The response includes:
+
+- `+"`payment_id`"+`
+- `+"`qr_url`"+`
+- `+"`payment_url`"+`
+- `+"`amount`"+`
+- `+"`currency`"+`
+
+Validation flow:
+
+1. `+"`GET qr_url`"+` and verify the response `+"`Content-Type`"+` contains `+"`image/svg+xml`"+`.
+2. Show the QR code or open `+"`payment_url`"+` to simulate a user scan.
+3. Recheck `+"`/v1/agent/balance`"+` and confirm the balance increased.
+4. Open the same `+"`payment_url`"+` again and confirm the balance does not increase again. Demo payments are idempotent.
+
+Legacy protected aliases also exist: `+"`POST /v1/agent/recharge`"+`, `+"`POST /v1/agent/topup`"+`, `+"`POST /v1/agent/payment`"+`, and `+"`POST /v1/agents/recharge-qr`"+`.
 
 ## Submit Task
 
+`+"```http"+`
 POST /v1/agent/tasks
+Authorization: Bearer ${BILLING_TOKEN}
+Content-Type: application/json
+`+"```"+`
+
+Image example using official `+"`gpt-image-2`"+` pricing:
 
 Body:
 
@@ -180,17 +231,58 @@ Body:
 {
   "type": "image",
   "provider": "bltai",
-  "model": "nano-banana-2",
-  "prompt": "A mango robot painting a storyboard, no text.",
+  "model": "gpt-image-2",
+  "prompt": "A mango robot checking official pricing tables, no text.",
   "params": {
-    "image_size": "1K",
-    "quality": "standard",
+    "quality": "medium",
+    "image_size": "1024x1024",
     "response_format": "url"
   }
 }
 `+"```"+`
 
-Images and videos are both asynchronous tasks. Poll `+"`/v1/agent/tasks/{task_id}`"+` until the task reaches a terminal status.
+Video example using Seedance 2.0 pricing:
+
+`+"```json"+`
+{
+  "type": "video",
+  "provider": "kie",
+  "model": "doubao-seedance-2-0-fast-260128",
+  "prompt": "A mango robot flipping through a storyboard, cinematic, no text.",
+  "params": {
+    "duration": "5",
+    "resolution": "720p"
+  }
+}
+`+"```"+`
+
+Supported official pricing rows currently include:
+
+- `+"`bltai`"+` image: `+"`gpt-image-2`"+`
+- `+"`kie`"+` image: `+"`gpt-image-2`"+`
+- `+"`evolink`"+` image: `+"`gpt-image-2`"+`
+- `+"`kie`"+` video: Seedance 2.0 series
+- `+"`evolink`"+` video: Seedance 2.0 series
+
+Images and videos are asynchronous tasks. The submit response includes `+"`task_id`"+`, `+"`status`"+`, and `+"`estimated_quota`"+`.
+
+Poll until terminal status:
+
+`+"```bash"+`
+curl -sS "`+strings.TrimSuffix(system_setting.ServerAddress, "/")+`/v1/agent/tasks/${TASK_ID}" \
+  -H "Authorization: Bearer ${BILLING_TOKEN}"
+`+"```"+`
+
+Terminal statuses are `+"`completed`"+` and `+"`failed`"+`. On success, use the returned result URL. On failure, report the task ID and error without exposing secrets.
+
+## Security Checklist
+
+- Do not print full `+"`BILLING_TOKEN`"+`.
+- Do not print provider keys.
+- Do not commit `+"`.env`"+`.
+- Do not commit email verification codes.
+- Do not commit raw registration responses.
+- Redact secrets as `+"`[REDACTED]`"+` in summaries and logs.
 `))
 }
 

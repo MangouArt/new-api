@@ -111,6 +111,29 @@ func TestMangouAgentRegisterCreatesUserAndTokenWithVerifiedEmail(t *testing.T) {
 	require.Equal(t, "auto", token.Group)
 }
 
+func TestMangouAgentSkillDocumentsGatewayContract(t *testing.T) {
+	setupMangouAgentTestDB(t)
+
+	ctx, recorder := newMangouJSONContext(t, http.MethodGet, "/skills/mangou-newapi/SKILL.md", nil)
+
+	MangouAgentSkill(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	body := recorder.Body.String()
+	require.Contains(t, body, "BILLING_TOKEN")
+	require.Contains(t, body, "verification_code")
+	require.Contains(t, body, "/v1/agent/auth/check")
+	require.Contains(t, body, "/v1/agent/balance")
+	require.Contains(t, body, "/v1/agent/recharge-qr")
+	require.Contains(t, body, "qr_url")
+	require.Contains(t, body, "payment_url")
+	require.Contains(t, body, "image/svg+xml")
+	require.Contains(t, body, "idempotent")
+	require.Contains(t, body, "gpt-image-2")
+	require.Contains(t, body, "doubao-seedance-2-0-fast-260128")
+	require.Contains(t, body, "[REDACTED]")
+}
+
 func TestMangouAgentRegisterReturnsFullExistingTokenForAgentReuse(t *testing.T) {
 	db := setupMangouAgentTestDB(t)
 	common.RegisterVerificationCodeWithKey("agent@example.com", "123456", common.EmailVerificationPurpose)
