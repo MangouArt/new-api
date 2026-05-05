@@ -11,6 +11,7 @@ Use NewAPI as the only gateway and billing system for Mangou agent traffic. Mang
 - Pricing is calculated from request parameters using provider-specific pricing config.
 - Agent registration requires email verification and reuses NewAPI's verification code primitives.
 - Agent clients only need an email during registration, then store the returned token as `BILLING_TOKEN`.
+- Demo recharge uses NewAPI `top_ups` rows and a scan URL: the agent requests a QR URL, the user opens/scans it, and NewAPI marks the payment paid and credits the account.
 
 ## Provider Group Model
 
@@ -177,6 +178,68 @@ Server behavior:
 - Implement local async task creation and pricing calculation.
 - Add routes.
 - Keep upstream HTTP submission as the next milestone, implemented through provider-specific `TaskAdaptor`s.
+
+## Agent Balance And Demo Recharge
+
+Protected endpoints use the same `Authorization: Bearer ${BILLING_TOKEN}` header as task submission:
+
+```text
+GET  /v1/agent/balance
+GET  /v1/agent/credits
+POST /v1/agent/recharge-qr
+POST /v1/agent/recharge
+POST /v1/agent/topup
+POST /v1/agent/payment
+```
+
+Legacy-compatible aliases are also available:
+
+```text
+POST /v1/agents/recharge-qr
+POST /v1/agents/recharge
+```
+
+Recharge request:
+
+```json
+{
+  "agent_id": "mangou-agent",
+  "tier": "gems_100",
+  "amount": 100,
+  "return_url": "https://example.com/after-payment"
+}
+```
+
+`amount` is optional when `tier` is one of:
+
+```text
+gems_10
+gems_100
+gems_1000
+```
+
+Response:
+
+```json
+{
+  "payment_id": "pay_...",
+  "payment_status": "pending",
+  "amount": 100,
+  "currency": "credits",
+  "demo": true,
+  "qr_url": "https://mangou-newapi.zeabur.app/v1/payments/pay_.../qr.svg",
+  "payment_url": "https://mangou-newapi.zeabur.app/v1/payments/demo-scan/pay_..."
+}
+```
+
+Public scan endpoints:
+
+```text
+GET /v1/payments/{payment_id}/qr.svg
+GET /v1/payments/demo-scan/{payment_id}
+```
+
+The scan endpoint is idempotent. The first successful scan marks the `top_ups` row `success` and adds `amount` credits to the NewAPI user quota. Repeated scans return the success page without adding quota again.
 
 ## Provider Runtime
 

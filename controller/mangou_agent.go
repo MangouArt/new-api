@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -14,7 +16,10 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting/system_setting"
+	"github.com/boombuler/barcode"
+	"github.com/boombuler/barcode/qr"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
@@ -24,6 +29,8 @@ const (
 	mangouAgentDefaultGroup   = "auto"
 	mangouImageOriginModel    = "mangou-image"
 	mangouVideoOriginModel    = "mangou-video"
+	mangouDemoPaymentMethod   = "mangou_demo"
+	mangouDemoPaymentProvider = "mangou_demo"
 )
 
 type mangouAgentRegisterRequest struct {
@@ -42,6 +49,13 @@ type mangouAgentTaskRequest struct {
 	Model    string         `json:"model"`
 	Prompt   string         `json:"prompt"`
 	Params   map[string]any `json:"params"`
+}
+
+type mangouAgentRechargeRequest struct {
+	AgentID   string `json:"agent_id"`
+	Tier      string `json:"tier"`
+	Amount    int64  `json:"amount"`
+	ReturnURL string `json:"return_url"`
 }
 
 type mangouProviderPricingRule struct {
@@ -133,6 +147,28 @@ Store the returned `+"`billing_token`"+` as `+"`BILLING_TOKEN`"+` and send it as
 GET /v1/agent/auth/check
 
 Use header `+"`Authorization: Bearer ${BILLING_TOKEN}`"+`.
+
+## Balance And Demo Recharge
+
+Check balance:
+
+GET /v1/agent/balance
+
+Request a demo recharge QR:
+
+POST /v1/agent/recharge-qr
+
+Body:
+
+`+"```json"+`
+{
+  "agent_id": "mangou-agent",
+  "tier": "gems_100",
+  "amount": 100
+}
+`+"```"+`
+
+The response includes `+"`payment_url`"+` and `+"`qr_url`"+`. Show the QR code or payment URL to the user. When the user opens the demo scan URL, NewAPI marks the payment paid and credits the account. Recheck `+"`/v1/agent/balance`"+` before submitting a task.
 
 ## Submit Task
 
@@ -233,6 +269,14 @@ func MangouAgentRegister(c *gin.Context) {
 }
 
 func MangouAgentAuthCheck(c *gin.Context) {
+	respondMangouAgentBalance(c)
+}
+
+func MangouAgentBalance(c *gin.Context) {
+	respondMangouAgentBalance(c)
+}
+
+func respondMangouAgentBalance(c *gin.Context) {
 	userID := c.GetInt("id")
 	if userID <= 0 {
 		common.ApiErrorMsg(c, "authenticated user is required")
@@ -252,7 +296,104 @@ func MangouAgentAuthCheck(c *gin.Context) {
 		"email":    user.Email,
 		"user_id":  user.Id,
 		"balance":  user.Quota,
+		"quota":    user.Quota,
+		"currency": "credits",
 	})
+}
+
+func MangouAgentRechargeQR(c *gin.Context) {
+	var req mangouAgentRechargeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	userID := c.GetInt("id")
+	if userID <= 0 {
+		common.ApiErrorMsg(c, "authenticated user is required")
+		return
+	}
+	amount, tier, err := normalizeMangouRechargeAmount(req)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	agentID := strings.TrimSpace(req.AgentID)
+	if agentID == "" {
+		agentID = strings.TrimPrefix(c.GetString("token_name"), mangouAgentTokenPrefix)
+	}
+	if agentID == "" {
+		agentID = mangouAgentDefaultAgentID
+	}
+	paymentID := "pay_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	baseURL := mangouPublicBaseURL(c)
+	if baseURL == "" {
+		common.ApiErrorMsg(c, "public base URL is unavailable")
+		return
+	}
+	paymentURL := buildMangouDemoPaymentURL(baseURL, paymentID, req.ReturnURL)
+
+	topUp := &model.TopUp{
+		UserId:          userID,
+		Amount:          amount,
+		Money:           float64(amount),
+		TradeNo:         paymentID,
+		PaymentMethod:   mangouDemoPaymentMethod,
+		PaymentProvider: mangouDemoPaymentProvider,
+		CreateTime:      time.Now().Unix(),
+		Status:          common.TopUpStatusPending,
+	}
+	if err := topUp.Insert(); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{
+		"agent_id":       agentID,
+		"user_id":        userID,
+		"payment_id":     paymentID,
+		"payment_status": topUp.Status,
+		"tier":           tier,
+		"amount":         amount,
+		"currency":       "credits",
+		"demo":           true,
+		"qr_url":         baseURL + "/v1/payments/" + paymentID + "/qr.svg",
+		"payment_url":    paymentURL,
+		"instructions":   "Show qr_url or payment_url to the user. Opening payment_url simulates a completed payment and credits the account.",
+	})
+}
+
+func MangouPaymentQRSVG(c *gin.Context) {
+	paymentID := strings.TrimSpace(c.Param("payment_id"))
+	topUp := model.GetTopUpByTradeNo(paymentID)
+	if topUp == nil || topUp.PaymentProvider != mangouDemoPaymentProvider {
+		c.String(http.StatusNotFound, "payment not found")
+		return
+	}
+	paymentURL := buildMangouDemoPaymentURL(mangouPublicBaseURL(c), paymentID, "")
+	svg, err := mangouQRCodeSVG(paymentURL)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	c.Data(http.StatusOK, "image/svg+xml; charset=utf-8", []byte(svg))
+}
+
+func MangouDemoPaymentScan(c *gin.Context) {
+	paymentID := strings.TrimSpace(c.Param("payment_id"))
+	payment, user, err := completeMangouDemoPayment(paymentID, c.ClientIP())
+	if err != nil {
+		c.String(http.StatusBadRequest, html.EscapeString(err.Error()))
+		return
+	}
+	returnURL := strings.TrimSpace(c.Query("returnUrl"))
+	body := "<!doctype html><html><head><meta charset=\"utf-8\"><title>Payment complete</title>"
+	if returnURL != "" && common.ValidateRedirectURL(returnURL) == nil {
+		body += "<meta http-equiv=\"refresh\" content=\"1;url=" + html.EscapeString(returnURL) + "\">"
+	}
+	body += "</head><body><h1>Demo payment complete</h1>"
+	body += "<p>Payment <code>" + html.EscapeString(payment.TradeNo) + "</code> is paid.</p>"
+	body += "<p>User <code>" + strconv.Itoa(user.Id) + "</code> balance: <code>" + strconv.Itoa(user.Quota) + "</code> credits.</p>"
+	body += "</body></html>"
+	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(body))
 }
 
 func MangouAgentSubmitTask(c *gin.Context) {
@@ -441,6 +582,130 @@ func MangouAgentGetTask(c *gin.Context) {
 		"quota":      task.Quota,
 		"result_url": task.GetResultURL(),
 	})
+}
+
+func normalizeMangouRechargeAmount(req mangouAgentRechargeRequest) (int64, string, error) {
+	tier := strings.TrimSpace(req.Tier)
+	if tier == "" {
+		tier = "gems_100"
+	}
+	if req.Amount > 0 {
+		return req.Amount, tier, nil
+	}
+	switch tier {
+	case "gems_10":
+		return 10, tier, nil
+	case "gems_100":
+		return 100, tier, nil
+	case "gems_1000":
+		return 1000, tier, nil
+	default:
+		return 0, tier, fmt.Errorf("unknown recharge tier: %s", tier)
+	}
+}
+
+func mangouPublicBaseURL(c *gin.Context) string {
+	base := strings.TrimRight(system_setting.ServerAddress, "/")
+	if base != "" {
+		return base
+	}
+	if c == nil || c.Request == nil {
+		return ""
+	}
+	host := c.Request.Host
+	if host == "" {
+		host = c.GetHeader("Host")
+	}
+	if host == "" {
+		return ""
+	}
+	proto := c.GetHeader("X-Forwarded-Proto")
+	if proto == "" {
+		proto = "https"
+	}
+	return strings.TrimRight(proto+"://"+host, "/")
+}
+
+func buildMangouDemoPaymentURL(baseURL string, paymentID string, returnURL string) string {
+	u := strings.TrimRight(baseURL, "/") + "/v1/payments/demo-scan/" + url.PathEscape(paymentID)
+	if strings.TrimSpace(returnURL) == "" {
+		return u
+	}
+	values := url.Values{}
+	values.Set("returnUrl", returnURL)
+	return u + "?" + values.Encode()
+}
+
+func completeMangouDemoPayment(paymentID string, callerIP string) (*model.TopUp, *model.User, error) {
+	if paymentID == "" {
+		return nil, nil, errors.New("payment_id is required")
+	}
+	refCol := "`trade_no`"
+	if common.UsingPostgreSQL {
+		refCol = `"trade_no"`
+	}
+	var completed model.TopUp
+	var user model.User
+	err := model.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Set("gorm:query_option", "FOR UPDATE").Where(refCol+" = ?", paymentID).First(&completed).Error; err != nil {
+			return errors.New("payment not found")
+		}
+		if completed.PaymentProvider != mangouDemoPaymentProvider {
+			return errors.New("payment provider mismatch")
+		}
+		if completed.Status == common.TopUpStatusSuccess {
+			return tx.First(&user, completed.UserId).Error
+		}
+		if completed.Status != common.TopUpStatusPending {
+			return errors.New("payment is not pending")
+		}
+		if completed.Amount <= 0 {
+			return errors.New("invalid payment amount")
+		}
+		completed.Status = common.TopUpStatusSuccess
+		completed.CompleteTime = common.GetTimestamp()
+		if err := tx.Save(&completed).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&model.User{}).Where("id = ?", completed.UserId).Update("quota", gorm.Expr("quota + ?", int(completed.Amount))).Error; err != nil {
+			return err
+		}
+		return tx.First(&user, completed.UserId).Error
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	model.RecordTopupLog(completed.UserId, fmt.Sprintf("Mangou demo payment complete, credited %d credits", completed.Amount), callerIP, completed.PaymentMethod, mangouDemoPaymentProvider)
+	return &completed, &user, nil
+}
+
+func mangouQRCodeSVG(target string) (string, error) {
+	code, err := qr.Encode(target, qr.M, qr.Auto)
+	if err != nil {
+		return "", err
+	}
+	scaled, err := barcode.Scale(code, 256, 256)
+	if err != nil {
+		return "", err
+	}
+	bounds := scaled.Bounds()
+	var b strings.Builder
+	b.WriteString(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" shape-rendering="crispEdges">`)
+	b.WriteString(`<rect width="256" height="256" fill="#fff"/>`)
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			r, g, bl, _ := scaled.At(x, y).RGBA()
+			if r+g+bl < 0x18000 {
+				b.WriteString(`<rect x="`)
+				b.WriteString(strconv.Itoa(x))
+				b.WriteString(`" y="`)
+				b.WriteString(strconv.Itoa(y))
+				b.WriteString(`" width="1" height="1" fill="#000"/>`)
+			}
+		}
+	}
+	b.WriteString(`</svg>`)
+	return b.String(), nil
 }
 
 func submitMangouUpstreamTask(req mangouAgentTaskRequest) (*mangouUpstreamTaskResult, bool, error) {

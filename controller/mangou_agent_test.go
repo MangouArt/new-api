@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/middleware"
@@ -33,7 +34,7 @@ func setupMangouAgentTestDB(t *testing.T) *gorm.DB {
 	require.NoError(t, err)
 	model.DB = db
 	model.LOG_DB = db
-	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Token{}, &model.Task{}, &model.Log{}, &model.MangouProviderPricing{}))
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Token{}, &model.Task{}, &model.Log{}, &model.TopUp{}, &model.MangouProviderPricing{}))
 
 	t.Cleanup(func() {
 		sqlDB, err := db.DB()
@@ -187,6 +188,97 @@ func TestMangouAgentAuthCheckReturnsAgentContext(t *testing.T) {
 	require.Equal(t, "hermes-mangou", data["agent_id"])
 	require.Equal(t, "agent@example.com", data["email"])
 	require.EqualValues(t, 123, data["balance"])
+	require.EqualValues(t, 123, data["quota"])
+	require.Equal(t, "credits", data["currency"])
+}
+
+func TestMangouAgentRechargeQRCreatesDemoPayment(t *testing.T) {
+	db := setupMangouAgentTestDB(t)
+	user := model.User{
+		Username:    "agentuser",
+		DisplayName: "agentuser",
+		Role:        common.RoleCommonUser,
+		Status:      common.UserStatusEnabled,
+		Email:       "agent@example.com",
+		Quota:       0,
+		Group:       "auto",
+	}
+	require.NoError(t, db.Create(&user).Error)
+
+	ctx, recorder := newMangouJSONContext(t, http.MethodPost, "/v1/agent/recharge-qr", map[string]any{
+		"agent_id": "hermes-mangou",
+		"tier":     "gems_100",
+	})
+	ctx.Request.Host = "mangou-newapi.example.com"
+	ctx.Request.Header.Set("X-Forwarded-Proto", "https")
+	ctx.Set("id", user.Id)
+	ctx.Set("token_name", "agent:hermes-mangou")
+
+	MangouAgentRechargeQR(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	resp := decodeMangouResponse(t, recorder)
+	require.Equal(t, true, resp["success"])
+	data := resp["data"].(map[string]any)
+	require.Equal(t, "hermes-mangou", data["agent_id"])
+	require.EqualValues(t, 100, data["amount"])
+	require.Equal(t, true, data["demo"])
+	require.NotEmpty(t, data["payment_id"])
+	require.Contains(t, data["payment_url"], "/v1/payments/demo-scan/")
+	require.Contains(t, data["qr_url"], "/v1/payments/")
+
+	var topUp model.TopUp
+	require.NoError(t, db.Where("trade_no = ?", data["payment_id"]).First(&topUp).Error)
+	require.Equal(t, common.TopUpStatusPending, topUp.Status)
+	require.Equal(t, "mangou_demo", topUp.PaymentProvider)
+	require.EqualValues(t, 100, topUp.Amount)
+}
+
+func TestMangouDemoPaymentScanMarksPaymentPaidAndCreditsUser(t *testing.T) {
+	db := setupMangouAgentTestDB(t)
+	user := model.User{
+		Username:    "agentuser",
+		DisplayName: "agentuser",
+		Role:        common.RoleCommonUser,
+		Status:      common.UserStatusEnabled,
+		Email:       "agent@example.com",
+		Quota:       0,
+		Group:       "auto",
+	}
+	require.NoError(t, db.Create(&user).Error)
+	topUp := model.TopUp{
+		UserId:          user.Id,
+		Amount:          25,
+		Money:           25,
+		TradeNo:         "pay_demo_scan",
+		PaymentMethod:   "mangou_demo",
+		PaymentProvider: "mangou_demo",
+		CreateTime:      time.Now().Unix(),
+		Status:          common.TopUpStatusPending,
+	}
+	require.NoError(t, db.Create(&topUp).Error)
+
+	ctx, recorder := newMangouJSONContext(t, http.MethodGet, "/v1/payments/demo-scan/pay_demo_scan", nil)
+	ctx.Params = gin.Params{{Key: "payment_id", Value: "pay_demo_scan"}}
+
+	MangouDemoPaymentScan(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Contains(t, recorder.Body.String(), "Demo payment complete")
+
+	var updatedUser model.User
+	require.NoError(t, db.First(&updatedUser, user.Id).Error)
+	require.Equal(t, 25, updatedUser.Quota)
+
+	var updatedTopUp model.TopUp
+	require.NoError(t, db.Where("trade_no = ?", "pay_demo_scan").First(&updatedTopUp).Error)
+	require.Equal(t, common.TopUpStatusSuccess, updatedTopUp.Status)
+
+	secondCtx, _ := newMangouJSONContext(t, http.MethodGet, "/v1/payments/demo-scan/pay_demo_scan", nil)
+	secondCtx.Params = gin.Params{{Key: "payment_id", Value: "pay_demo_scan"}}
+	MangouDemoPaymentScan(secondCtx)
+	require.NoError(t, db.First(&updatedUser, user.Id).Error)
+	require.Equal(t, 25, updatedUser.Quota)
 }
 
 func TestMangouAgentRegisteredTokenPassesAuthMiddleware(t *testing.T) {
