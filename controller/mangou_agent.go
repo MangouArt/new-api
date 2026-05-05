@@ -419,7 +419,8 @@ func MangouAgentSubmitTask(c *gin.Context) {
 		return
 	}
 
-	quota, ratios, err := calculateMangouTaskQuota(req.Provider, req.Type, req.Params)
+	pricingParams := buildMangouPricingParams(req)
+	quota, ratios, err := calculateMangouTaskQuota(req.Provider, req.Type, pricingParams)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -1101,8 +1102,15 @@ func calculateMangouTaskQuota(provider string, taskType string, params map[strin
 
 	total := float64(rule.BaseQuota)
 	ratios := map[string]float64{"base_quota": float64(rule.BaseQuota)}
+	hasPricingTier := false
+	if _, ok := rule.Multipliers["pricing_tier"]; ok {
+		_, hasPricingTier = params["pricing_tier"]
+	}
 	for paramName, values := range rule.Multipliers {
 		if len(values) == 0 {
+			continue
+		}
+		if hasPricingTier && (paramName == "model" || paramName == "quality" || paramName == "resolution" || paramName == "input_mode" || paramName == "image_size" || paramName == "size") {
 			continue
 		}
 		raw, exists := params[paramName]
@@ -1118,6 +1126,96 @@ func calculateMangouTaskQuota(provider string, taskType string, params map[strin
 		ratios[paramName] = multiplier
 	}
 	return int(total + 0.5), ratios, nil
+}
+
+func buildMangouPricingParams(req mangouAgentTaskRequest) map[string]any {
+	params := make(map[string]any, len(req.Params)+4)
+	for key, value := range req.Params {
+		params[key] = value
+	}
+	params["model"] = req.Model
+
+	if _, exists := params["quality"]; !exists {
+		if resolution, ok := params["resolution"]; ok {
+			params["quality"] = resolution
+		}
+	}
+	if raw, exists := params["duration"]; exists {
+		if normalized, ok := normalizeMangouDuration(raw); ok {
+			params["duration"] = normalized
+		}
+	}
+
+	if req.Type == "image" {
+		quality := "medium"
+		if raw, exists := params["quality"]; exists && strings.TrimSpace(mangouPricingValueKey(raw)) != "" {
+			quality = strings.TrimSpace(strings.ToLower(mangouPricingValueKey(raw)))
+		}
+		size := normalizeMangouImageSize(params["image_size"], params["size"], params["aspect_ratio"])
+		params["quality"] = quality
+		params["image_size"] = size
+		params["pricing_tier"] = req.Model + "|" + quality + "|" + size
+	}
+
+	if req.Type == "video" {
+		inputMode := "no_video_input"
+		if mangouPricingHasNonEmptyList(params["video_urls"]) || mangouPricingHasNonEmptyList(params["videos"]) || strings.TrimSpace(mangouPricingValueKey(params["video_url"])) != "" {
+			inputMode = "with_video_input"
+		}
+		params["input_mode"] = inputMode
+		quality := "720p"
+		if raw, exists := params["quality"]; exists && strings.TrimSpace(mangouPricingValueKey(raw)) != "" {
+			quality = strings.TrimSpace(mangouPricingValueKey(raw))
+		}
+		params["pricing_tier"] = req.Model + "|" + inputMode + "|" + quality
+	}
+
+	return params
+}
+
+func normalizeMangouImageSize(values ...any) string {
+	for _, value := range values {
+		raw := strings.TrimSpace(mangouPricingValueKey(value))
+		if raw == "" {
+			continue
+		}
+		key := strings.ReplaceAll(strings.ToLower(raw), " ", "")
+		switch key {
+		case "1024x1024", "1k", "square", "1:1":
+			return "1024x1024"
+		case "1536x1024", "landscape", "3:2", "16:9":
+			return "1536x1024"
+		case "1024x1536", "portrait", "2:3", "9:16":
+			return "1024x1536"
+		default:
+			return strings.ReplaceAll(raw, " ", "")
+		}
+	}
+	return "1024x1024"
+}
+
+func normalizeMangouDuration(value any) (string, bool) {
+	key := strings.TrimSpace(mangouPricingValueKey(value))
+	if key == "" {
+		return "", false
+	}
+	key = strings.TrimSuffix(strings.ToLower(key), "s")
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return "", false
+	}
+	return key, true
+}
+
+func mangouPricingHasNonEmptyList(value any) bool {
+	switch v := value.(type) {
+	case []any:
+		return len(v) > 0
+	case []string:
+		return len(v) > 0
+	default:
+		return false
+	}
 }
 
 func mangouPricingValueKey(value any) string {

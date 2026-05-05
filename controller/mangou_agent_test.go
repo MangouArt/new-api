@@ -439,6 +439,69 @@ func TestMangouProviderPricingUsesDatabaseOnly(t *testing.T) {
 	require.Equal(t, 100, rule.BaseQuota)
 }
 
+func TestMangouTaskQuotaUsesDerivedPricingTier(t *testing.T) {
+	db := setupMangouAgentTestDB(t)
+	seedMangouPricing(t, db, "kie", "video", 1, `{
+		"duration":{"15":15},
+		"pricing_tier":{
+			"bytedance/seedance-2-fast|no_video_input|480p":38750,
+			"bytedance/seedance-2-fast|no_video_input|720p":82500,
+			"bytedance/seedance-2|with_video_input|1080p":155000
+		}
+	}`)
+
+	params := buildMangouPricingParams(mangouAgentTaskRequest{
+		Type:     "video",
+		Provider: "kie",
+		Model:    "bytedance/seedance-2",
+		Params: map[string]any{
+			"duration":   "15s",
+			"resolution": "1080p",
+			"video_urls": []any{"https://cdn.example/reference.mp4"},
+		},
+	})
+	quota, ratios, err := calculateMangouTaskQuota("kie", "video", params)
+
+	require.NoError(t, err)
+	require.Equal(t, "15", params["duration"])
+	require.Equal(t, "1080p", params["quality"])
+	require.Equal(t, "with_video_input", params["input_mode"])
+	require.Equal(t, "bytedance/seedance-2|with_video_input|1080p", params["pricing_tier"])
+	require.Equal(t, 2325000, quota)
+	require.EqualValues(t, 15, ratios["duration"])
+	require.EqualValues(t, 155000, ratios["pricing_tier"])
+}
+
+func TestMangouTaskQuotaUsesImagePricingTier(t *testing.T) {
+	db := setupMangouAgentTestDB(t)
+	seedMangouPricing(t, db, "bltai", "image", 1, `{
+		"pricing_tier":{
+			"gpt-image-2|low|1024x1024":4080,
+			"gpt-image-2|medium|1024x1024":15840,
+			"gpt-image-2|medium|1536x1024":23520,
+			"gpt-image-2|high|1024x1536":93600
+		}
+	}`)
+
+	params := buildMangouPricingParams(mangouAgentTaskRequest{
+		Type:     "image",
+		Provider: "bltai",
+		Model:    "gpt-image-2",
+		Params: map[string]any{
+			"quality":      "medium",
+			"aspect_ratio": "16:9",
+		},
+	})
+	quota, ratios, err := calculateMangouTaskQuota("bltai", "image", params)
+
+	require.NoError(t, err)
+	require.Equal(t, "medium", params["quality"])
+	require.Equal(t, "1536x1024", params["image_size"])
+	require.Equal(t, "gpt-image-2|medium|1536x1024", params["pricing_tier"])
+	require.Equal(t, 23520, quota)
+	require.EqualValues(t, 23520, ratios["pricing_tier"])
+}
+
 func TestMangouAgentSubmitTaskSubmitsUnifiedProviderTask(t *testing.T) {
 	db := setupMangouAgentTestDB(t)
 	seedMangouPricing(t, db, "evolink", "image", 100, "")
