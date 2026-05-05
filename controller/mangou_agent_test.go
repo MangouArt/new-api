@@ -102,10 +102,11 @@ func TestMangouAgentRegisterCreatesUserAndTokenWithVerifiedEmail(t *testing.T) {
 
 	var user model.User
 	require.NoError(t, db.Where("email = ?", "agent@example.com").First(&user).Error)
+	require.Equal(t, "auto", user.Group)
 	var token model.Token
 	require.NoError(t, db.Where("user_id = ? AND name = ?", user.Id, "agent:hermes-mangou").First(&token).Error)
 	require.True(t, token.UnlimitedQuota)
-	require.Equal(t, "default", token.Group)
+	require.Equal(t, "auto", token.Group)
 }
 
 func TestMangouAgentRegisterReturnsFullExistingTokenForAgentReuse(t *testing.T) {
@@ -153,7 +154,11 @@ func TestMangouAgentRegisterReturnsFullExistingTokenForAgentReuse(t *testing.T) 
 
 	var updated model.Token
 	require.NoError(t, db.First(&updated, token.Id).Error)
-	require.Equal(t, "default", updated.Group)
+	require.Equal(t, "auto", updated.Group)
+
+	var updatedUser model.User
+	require.NoError(t, db.First(&updatedUser, user.Id).Error)
+	require.Equal(t, "auto", updatedUser.Group)
 }
 
 func TestMangouAgentAuthCheckReturnsAgentContext(t *testing.T) {
@@ -230,7 +235,7 @@ func TestMangouAgentRegisteredTokenPassesAuthMiddleware(t *testing.T) {
 
 	var token model.Token
 	require.NoError(t, db.Where("name = ?", "agent:hermes-mangou").First(&token).Error)
-	require.Equal(t, "default", token.Group)
+	require.Equal(t, "auto", token.Group)
 }
 
 func TestMangouAgentRegisterRejectsInvalidVerificationCode(t *testing.T) {

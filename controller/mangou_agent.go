@@ -21,6 +21,7 @@ import (
 const (
 	mangouAgentDefaultAgentID = "mangou-agent"
 	mangouAgentTokenPrefix    = "agent:"
+	mangouAgentDefaultGroup   = "auto"
 	mangouImageOriginModel    = "mangou-image"
 	mangouVideoOriginModel    = "mangou-video"
 )
@@ -887,6 +888,9 @@ func findOrCreateMangouAgentUser(email string) (*model.User, error) {
 	var user model.User
 	err := model.DB.Where("email = ?", email).First(&user).Error
 	if err == nil {
+		if err := ensureMangouAgentUserGroup(&user); err != nil {
+			return nil, err
+		}
 		return &user, nil
 	}
 	if !errors.Is(err, gorm.ErrRecordNotFound) {
@@ -904,7 +908,7 @@ func findOrCreateMangouAgentUser(email string) (*model.User, error) {
 		Role:        common.RoleCommonUser,
 		Status:      common.UserStatusEnabled,
 		Email:       email,
-		Group:       "default",
+		Group:       mangouAgentDefaultGroup,
 	}
 	if err := user.Insert(0); err != nil {
 		return nil, err
@@ -912,13 +916,24 @@ func findOrCreateMangouAgentUser(email string) (*model.User, error) {
 	return &user, nil
 }
 
+func ensureMangouAgentUserGroup(user *model.User) error {
+	if user.Group == mangouAgentDefaultGroup {
+		return nil
+	}
+	if err := model.DB.Model(&model.User{}).Where("id = ?", user.Id).Update("group", mangouAgentDefaultGroup).Error; err != nil {
+		return err
+	}
+	user.Group = mangouAgentDefaultGroup
+	return model.UpdateUserGroupCache(user.Id, mangouAgentDefaultGroup)
+}
+
 func findOrCreateMangouAgentToken(userID int, agentID string) (*model.Token, bool, error) {
 	tokenName := mangouAgentTokenPrefix + agentID
 	var token model.Token
 	err := model.DB.Where("user_id = ? AND name = ?", userID, tokenName).First(&token).Error
 	if err == nil {
-		if token.Group == "auto" {
-			token.Group = "default"
+		if token.Group != mangouAgentDefaultGroup {
+			token.Group = mangouAgentDefaultGroup
 			token.CrossGroupRetry = true
 			if err := token.Update(); err != nil {
 				return nil, false, err
@@ -945,7 +960,7 @@ func findOrCreateMangouAgentToken(userID int, agentID string) (*model.Token, boo
 		RemainQuota:        0,
 		UnlimitedQuota:     true,
 		ModelLimitsEnabled: false,
-		Group:              "default",
+		Group:              mangouAgentDefaultGroup,
 		CrossGroupRetry:    true,
 	}
 	if err := token.Insert(); err != nil {
