@@ -163,8 +163,9 @@ Server behavior:
    - `common.SendEmail`
 2. If email does not exist, create a common user with a generated username.
 3. If email exists, reuse that user.
-4. Create or reuse a token named for the agent.
-5. Return `token` only when a new token is created. For existing tokens, return a masked token and let the agent keep its local secret.
+4. Ensure the agent user and token use the `auto` group so provider routing can select any enabled provider group.
+5. Create or reuse a token named for the agent.
+6. Return the full `billing_token` so headless agents can persist and use it without a dashboard handoff.
 
 ## First Implementation Milestone
 
