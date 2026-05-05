@@ -434,6 +434,17 @@ func TestMangouAgentSubmitTaskCreatesAsyncImageTaskWithParameterPricing(t *testi
 	var updated model.User
 	require.NoError(t, db.First(&updated, user.Id).Error)
 	require.Equal(t, 700, updated.Quota)
+	require.Equal(t, 300, updated.UsedQuota)
+	require.Equal(t, 1, updated.RequestCount)
+
+	var consumeLog model.Log
+	require.NoError(t, db.Where("user_id = ? AND type = ?", user.Id, model.LogTypeConsume).First(&consumeLog).Error)
+	require.Equal(t, "nano-banana-2", consumeLog.ModelName)
+	require.Equal(t, "bltai", consumeLog.Group)
+	require.Equal(t, 300, consumeLog.Quota)
+	require.Equal(t, 77, consumeLog.TokenId)
+	require.Contains(t, consumeLog.Other, "task_id")
+	require.Contains(t, consumeLog.Other, "pricing_params")
 }
 
 func TestMangouAgentSubmitTaskRejectsMissingProviderPricing(t *testing.T) {

@@ -497,6 +497,7 @@ func MangouDemoPaymentScan(c *gin.Context) {
 }
 
 func MangouAgentSubmitTask(c *gin.Context) {
+	startedAt := time.Now()
 	var req mangouAgentTaskRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		common.ApiError(c, err)
@@ -617,7 +618,7 @@ func MangouAgentSubmitTask(c *gin.Context) {
 		return
 	}
 
-	model.RecordLog(userID, model.LogTypeSystem, fmt.Sprintf("Mangou %s task submitted, provider=%s, quota=%d", req.Type, req.Provider, quota))
+	recordMangouAgentTaskConsumeLog(c, task, req, quota, startedAt)
 	common.ApiSuccess(c, gin.H{
 		"status":          "submitted",
 		"task_id":         task.TaskID,
@@ -627,6 +628,35 @@ func MangouAgentSubmitTask(c *gin.Context) {
 		"estimated_quota": quota,
 		"poll_url":        "/v1/agent/tasks/" + task.TaskID,
 	})
+}
+
+func recordMangouAgentTaskConsumeLog(c *gin.Context, task *model.Task, req mangouAgentTaskRequest, quota int, startedAt time.Time) {
+	other := map[string]interface{}{
+		"is_task":        true,
+		"task_id":        task.TaskID,
+		"provider":       req.Provider,
+		"task_type":      req.Type,
+		"request_path":   c.Request.URL.Path,
+		"pricing_params": buildMangouPricingParams(req),
+	}
+	model.RecordTaskBillingLog(model.RecordTaskBillingLogParams{
+		UserId:           task.UserId,
+		LogType:          model.LogTypeConsume,
+		Content:          fmt.Sprintf("Mangou %s task submitted", req.Type),
+		ChannelId:        task.ChannelId,
+		ModelName:        req.Model,
+		Quota:            quota,
+		PromptTokens:     1,
+		CompletionTokens: 1,
+		TokenId:          task.PrivateData.TokenId,
+		UseTimeSeconds:   int(time.Since(startedAt).Seconds()),
+		Group:            task.Group,
+		Other:            other,
+	})
+	model.UpdateUserUsedQuotaAndRequestCount(task.UserId, quota)
+	if task.ChannelId > 0 {
+		model.UpdateChannelUsedQuota(task.ChannelId, quota)
+	}
 }
 
 func MangouAgentGetTask(c *gin.Context) {
