@@ -250,11 +250,19 @@ Video example using Seedance 2.0 pricing:
   "model": "doubao-seedance-2-0-fast-260128",
   "prompt": "A mango robot flipping through a storyboard, cinematic, no text.",
   "params": {
-    "duration": "5",
-    "resolution": "720p"
+    "duration": 5,
+    "resolution": "720p",
+    "aspect_ratio": "16:9",
+    "quality": "720p"
   }
 }
 `+"```"+`
+
+Parameter notes:
+
+- For `+"`gpt-image-2`"+` image tasks, use `+"`params.image_size`"+` such as `+"`1024x1024`"+`; do not send only `+"`params.size`"+`.
+- For KIE Seedance video tasks, send `+"`params.quality`"+` such as `+"`720p`"+`. If omitted, the gateway tries to copy `+"`params.resolution`"+`; if both are missing, the request is rejected before provider submission.
+- API errors return `+"`success: false`"+` and an actionable `+"`message`"+`. Do not guess missing fields; read the returned `+"`message`"+`, fix the named field, and retry.
 
 Supported official pricing rows currently include:
 
@@ -508,6 +516,10 @@ func MangouAgentSubmitTask(c *gin.Context) {
 	}
 	if req.Provider == "" || req.Model == "" || req.Prompt == "" {
 		common.ApiErrorMsg(c, "provider, model and prompt are required")
+		return
+	}
+	if err := normalizeMangouAgentTaskRequest(&req); err != nil {
+		common.ApiError(c, err)
 		return
 	}
 
@@ -961,6 +973,9 @@ func submitMangouKIERunwayTask(req mangouAgentTaskRequest, key string) (*mangouU
 		return nil, true, err
 	}
 	if parsed.Code != 0 && parsed.Code != 200 {
+		if strings.Contains(strings.ToLower(parsed.Msg), "quality") {
+			return nil, true, errors.New(`kie submit failed: params.quality is required for KIE video tasks; set params.quality to a supported value such as "720p"`)
+		}
 		return nil, true, fmt.Errorf("kie submit failed: %s", parsed.Msg)
 	}
 	if parsed.Data.TaskID == "" {
@@ -1265,6 +1280,33 @@ func buildMangouPricingParams(req mangouAgentTaskRequest) map[string]any {
 	return params
 }
 
+func normalizeMangouAgentTaskRequest(req *mangouAgentTaskRequest) error {
+	if req.Params == nil {
+		req.Params = map[string]any{}
+	}
+	switch req.Type {
+	case "image":
+		quality := "medium"
+		if raw, exists := req.Params["quality"]; exists && strings.TrimSpace(mangouPricingValueKey(raw)) != "" {
+			quality = strings.TrimSpace(strings.ToLower(mangouPricingValueKey(raw)))
+		}
+		req.Params["quality"] = quality
+		req.Params["image_size"] = normalizeMangouImageSize(req.Params["image_size"], req.Params["size"], req.Params["aspect_ratio"])
+	case "video":
+		if req.Provider == "kie" {
+			quality := strings.TrimSpace(mangouPricingValueKey(req.Params["quality"]))
+			if quality == "" {
+				quality = strings.TrimSpace(mangouPricingValueKey(req.Params["resolution"]))
+			}
+			if quality == "" {
+				return errors.New(`params.quality is required for KIE video tasks; set params.quality to a supported value such as "720p"`)
+			}
+			req.Params["quality"] = quality
+		}
+	}
+	return nil
+}
+
 func normalizeMangouImageSize(values ...any) string {
 	for _, value := range values {
 		raw := strings.TrimSpace(mangouPricingValueKey(value))
@@ -1312,6 +1354,8 @@ func mangouPricingHasNonEmptyList(value any) bool {
 
 func mangouPricingValueKey(value any) string {
 	switch v := value.(type) {
+	case nil:
+		return ""
 	case string:
 		return strings.TrimSpace(v)
 	case float64:

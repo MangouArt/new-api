@@ -131,6 +131,9 @@ func TestMangouAgentSkillDocumentsGatewayContract(t *testing.T) {
 	require.Contains(t, body, "idempotent")
 	require.Contains(t, body, "gpt-image-2")
 	require.Contains(t, body, "doubao-seedance-2-0-fast-260128")
+	require.Contains(t, body, "image_size")
+	require.Contains(t, body, "params.quality")
+	require.Contains(t, body, "actionable")
 	require.Contains(t, body, "[REDACTED]")
 }
 
@@ -540,6 +543,8 @@ func TestMangouAgentSubmitTaskSubmitsUnifiedProviderTask(t *testing.T) {
 			require.Equal(t, "gemini-3.1-flash-image-preview", payload["model"])
 			require.Equal(t, "A mango robot.", payload["prompt"])
 			require.Equal(t, "16:9", payload["aspect_ratio"])
+			require.Equal(t, "medium", payload["quality"])
+			require.Equal(t, "1536x1024", payload["image_size"])
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"id":"remote-image-task","status":"pending","progress":0,"type":"image","model":"gemini-3.1-flash-image-preview"}`))
 		case "/v1/tasks/remote-image-task":
@@ -646,6 +651,7 @@ func TestMangouAgentSubmitTaskSubmitsKIERunwayVideoTask(t *testing.T) {
 			require.NoError(t, common.DecodeJson(r.Body, &payload))
 			require.Equal(t, "A mango robot walks.", payload["prompt"])
 			require.EqualValues(t, float64(5), payload["duration"])
+			require.Equal(t, "720p", payload["quality"])
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"code":200,"msg":"success","data":{"taskId":"kie-video-task"}}`))
 		case "/api/v1/runway/record-detail":
@@ -668,7 +674,8 @@ func TestMangouAgentSubmitTaskSubmitsKIERunwayVideoTask(t *testing.T) {
 		"model":    "runway",
 		"prompt":   "A mango robot walks.",
 		"params": map[string]any{
-			"duration": 5,
+			"duration":   5,
+			"resolution": "720p",
 		},
 	})
 	ctx.Set("id", user.Id)
@@ -695,4 +702,32 @@ func TestMangouAgentSubmitTaskSubmitsKIERunwayVideoTask(t *testing.T) {
 	getData := getResp["data"].(map[string]any)
 	require.Equal(t, "completed", getData["status"])
 	require.Equal(t, "https://cdn.example/video.mp4", getData["result_url"])
+}
+
+func TestMangouAgentSubmitTaskRejectsKIEVideoWithoutQualityOrResolution(t *testing.T) {
+	db := setupMangouAgentTestDB(t)
+	seedMangouPricing(t, db, "kie", "video", 200, "")
+	t.Setenv("KIE_API_KEY", "test-kie-key")
+
+	user := model.User{Username: "agentuser", Role: common.RoleCommonUser, Status: common.UserStatusEnabled, Quota: 1000, Group: "default"}
+	require.NoError(t, db.Create(&user).Error)
+
+	ctx, recorder := newMangouJSONContext(t, http.MethodPost, "/v1/agent/tasks", map[string]any{
+		"type":     "video",
+		"provider": "kie",
+		"model":    "doubao-seedance-2-0-fast-260128",
+		"prompt":   "A mango robot walks.",
+		"params": map[string]any{
+			"duration": 5,
+		},
+	})
+	ctx.Set("id", user.Id)
+	ctx.Set("token_unlimited_quota", true)
+
+	MangouAgentSubmitTask(ctx)
+	require.Equal(t, http.StatusOK, recorder.Code)
+	resp := decodeMangouResponse(t, recorder)
+	require.Equal(t, false, resp["success"])
+	require.Contains(t, resp["message"], "params.quality")
+	require.Contains(t, resp["message"], "720p")
 }
