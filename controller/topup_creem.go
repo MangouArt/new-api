@@ -251,7 +251,7 @@ func CreemWebhook(c *gin.Context) {
 	}
 
 	// 验证签名
-	if !verifyCreemSignature(string(bodyBytes), signature, setting.CreemWebhookSecret) {
+	if !verifyCreemSignature(string(bodyBytes), signature, setting.GetCreemWebhookSecret()) {
 		logger.LogWarn(c.Request.Context(), fmt.Sprintf("Creem webhook 验签失败 path=%q client_ip=%s signature=%q body=%q", c.Request.RequestURI, c.ClientIP(), signature, string(bodyBytes)))
 		c.AbortWithStatus(http.StatusUnauthorized)
 		return
@@ -373,7 +373,8 @@ type CreemCheckoutResponse struct {
 }
 
 func genCreemLink(ctx context.Context, referenceId string, product *CreemProduct, email string, username string) (string, error) {
-	if setting.CreemApiKey == "" {
+	creemApiKey := setting.GetCreemApiKey()
+	if creemApiKey == "" {
 		return "", fmt.Errorf("未配置Creem API密钥")
 	}
 
@@ -415,7 +416,7 @@ func genCreemLink(ctx context.Context, referenceId string, product *CreemProduct
 
 	// 设置请求头
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-api-key", setting.CreemApiKey)
+	req.Header.Set("x-api-key", creemApiKey)
 
 	logger.LogInfo(ctx, fmt.Sprintf("Creem 支付请求已发送 api_url=%s product_id=%s email=%q trade_no=%s", apiUrl, product.ProductId, email, referenceId))
 

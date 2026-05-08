@@ -50,7 +50,7 @@ func SubscriptionRequestCreemPay(c *gin.Context) {
 		common.ApiErrorMsg(c, "该套餐未配置 CreemProductId")
 		return
 	}
-	if setting.CreemWebhookSecret == "" && !setting.CreemTestMode {
+	if setting.GetCreemWebhookSecret() == "" && !setting.CreemTestMode {
 		common.ApiErrorMsg(c, "Creem Webhook 未配置")
 		return
 	}

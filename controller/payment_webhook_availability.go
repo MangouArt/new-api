@@ -24,12 +24,12 @@ func isStripeWebhookEnabled() bool {
 
 func isCreemTopUpEnabled() bool {
 	products := strings.TrimSpace(setting.CreemProducts)
-	return strings.TrimSpace(setting.CreemApiKey) != "" &&
+	return setting.GetCreemApiKey() != "" &&
 		((products != "" && products != "[]") || model.HasActivePaymentProducts(model.PaymentProviderCreem))
 }
 
 func isCreemWebhookConfigured() bool {
-	return strings.TrimSpace(setting.CreemWebhookSecret) != ""
+	return setting.GetCreemWebhookSecret() != ""
 }
 
 func isCreemWebhookEnabled() bool {
