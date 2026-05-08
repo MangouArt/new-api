@@ -33,6 +33,8 @@ const (
 	mangouDemoPaymentProvider = "mangou_demo"
 )
 
+var genMangouCreemCheckoutLink = genCreemLink
+
 type mangouAgentRegisterRequest struct {
 	Email            string `json:"email"`
 	VerificationCode string `json:"verification_code"`
@@ -189,7 +191,7 @@ curl -sS "`+strings.TrimSuffix(system_setting.ServerAddress, "/")+`/v1/agent/aut
 
 Expected success includes `+"`agent_id`"+`, `+"`user_id`"+`, `+"`balance`"+`, `+"`quota`"+`, and `+"`currency`"+`.
 
-## Balance And Demo Recharge
+## Balance And Recharge
 
 Check balance:
 
@@ -200,7 +202,7 @@ curl -sS "`+strings.TrimSuffix(system_setting.ServerAddress, "/")+`/v1/agent/bal
 
 `+"`/v1/agent/credits`"+` is an alias for `+"`/v1/agent/balance`"+`.
 
-Request a demo recharge QR:
+Request a recharge QR:
 
 `+"```http"+`
 POST /v1/agent/recharge-qr
@@ -226,13 +228,17 @@ The response includes:
 - `+"`payment_url`"+`
 - `+"`amount`"+`
 - `+"`currency`"+`
+- `+"`provider`"+` when a real payment provider is used
+- `+"`demo`"+`, where `+"`false`"+` means `+"`payment_url`"+` is a real checkout page and `+"`true`"+` means the demo scan flow is active
 
 Validation flow:
 
 1. `+"`GET qr_url`"+` and verify the response `+"`Content-Type`"+` contains `+"`image/svg+xml`"+`.
-2. Show the QR code or open `+"`payment_url`"+` to simulate a user scan.
-3. Recheck `+"`/v1/agent/balance`"+` and confirm the balance increased.
-4. Open the same `+"`payment_url`"+` again and confirm the balance does not increase again. Demo payments are idempotent.
+2. Show the QR code or open `+"`payment_url`"+`.
+3. If `+"`demo`"+` is `+"`false`"+`, the user must complete the external checkout and the payment provider webhook will credit the account.
+4. If `+"`demo`"+` is `+"`true`"+`, opening `+"`payment_url`"+` simulates payment completion.
+5. Recheck `+"`/v1/agent/balance`"+` and confirm the balance increased.
+6. Repeating the same payment callback must be idempotent and must not double-credit the account.
 
 Legacy protected aliases also exist: `+"`POST /v1/agent/recharge`"+`, `+"`POST /v1/agent/topup`"+`, `+"`POST /v1/agent/payment`"+`, and `+"`POST /v1/agents/recharge-qr`"+`.
 
@@ -453,6 +459,11 @@ func MangouAgentRechargeQR(c *gin.Context) {
 		common.ApiErrorMsg(c, "public base URL is unavailable")
 		return
 	}
+	if isCreemWebhookEnabled() {
+		if respondMangouAgentCreemRecharge(c, userID, agentID, paymentID, amount, tier, baseURL) {
+			return
+		}
+	}
 	paymentURL := buildMangouDemoPaymentURL(baseURL, paymentID, req.ReturnURL)
 
 	topUp := &model.TopUp{
@@ -484,14 +495,91 @@ func MangouAgentRechargeQR(c *gin.Context) {
 	})
 }
 
+func respondMangouAgentCreemRecharge(c *gin.Context, userID int, agentID string, paymentID string, amount int64, tier string, baseURL string) bool {
+	product, err := selectMangouAgentCreemProduct(amount, tier)
+	if err != nil {
+		common.ApiError(c, err)
+		return true
+	}
+	user, err := model.GetUserById(userID, false)
+	if err != nil {
+		common.ApiError(c, err)
+		return true
+	}
+	topUp := &model.TopUp{
+		UserId:          userID,
+		Amount:          product.Quota,
+		Money:           product.Price,
+		TradeNo:         paymentID,
+		PaymentMethod:   model.PaymentMethodCreem,
+		PaymentProvider: model.PaymentProviderCreem,
+		CreateTime:      time.Now().Unix(),
+		Status:          common.TopUpStatusPending,
+	}
+	if err := topUp.Insert(); err != nil {
+		common.ApiError(c, err)
+		return true
+	}
+	checkoutURL, err := genMangouCreemCheckoutLink(c.Request.Context(), paymentID, product, user.Email, user.Username)
+	if err != nil {
+		topUp.Status = common.TopUpStatusFailed
+		_ = topUp.Update()
+		common.ApiError(c, fmt.Errorf("create Creem checkout failed: %w", err))
+		return true
+	}
+	qrURL := buildMangouPaymentQRURL(baseURL, paymentID, checkoutURL)
+	common.ApiSuccess(c, gin.H{
+		"agent_id":       agentID,
+		"user_id":        userID,
+		"payment_id":     paymentID,
+		"payment_status": topUp.Status,
+		"tier":           tier,
+		"amount":         product.Quota,
+		"currency":       "credits",
+		"demo":           false,
+		"provider":       model.PaymentProviderCreem,
+		"qr_url":         qrURL,
+		"payment_url":    checkoutURL,
+		"instructions":   "Show qr_url or payment_url to the user. Creem webhook will credit the account after checkout.completed is paid.",
+	})
+	return true
+}
+
+func selectMangouAgentCreemProduct(amount int64, tier string) (*CreemProduct, error) {
+	product, err := model.GetActivePaymentProduct(model.PaymentProviderCreem, amount, tier)
+	if err != nil {
+		return nil, fmt.Errorf("Creem payment product is not configured for tier=%s amount=%d credits", tier, amount)
+	}
+	return &CreemProduct{
+		ProductId: product.ProductId,
+		Name:      product.Name,
+		Price:     product.Price,
+		Currency:  product.Currency,
+		Quota:     product.Quota,
+	}, nil
+}
+
 func MangouPaymentQRSVG(c *gin.Context) {
 	paymentID := strings.TrimSpace(c.Param("payment_id"))
 	topUp := model.GetTopUpByTradeNo(paymentID)
-	if topUp == nil || topUp.PaymentProvider != mangouDemoPaymentProvider {
+	if topUp == nil {
 		c.String(http.StatusNotFound, "payment not found")
 		return
 	}
-	paymentURL := buildMangouDemoPaymentURL(mangouPublicBaseURL(c), paymentID, "")
+	var paymentURL string
+	switch topUp.PaymentProvider {
+	case mangouDemoPaymentProvider:
+		paymentURL = buildMangouDemoPaymentURL(mangouPublicBaseURL(c), paymentID, "")
+	case model.PaymentProviderCreem:
+		paymentURL = strings.TrimSpace(c.Query("target"))
+		if paymentURL == "" || common.ValidateRedirectURL(paymentURL) != nil {
+			c.String(http.StatusBadRequest, "valid target is required")
+			return
+		}
+	default:
+		c.String(http.StatusNotFound, "payment not found")
+		return
+	}
 	svg, err := mangouQRCodeSVG(paymentURL)
 	if err != nil {
 		common.ApiError(c, err)
@@ -1105,6 +1193,13 @@ func buildMangouDemoPaymentURL(baseURL string, paymentID string, returnURL strin
 	}
 	values := url.Values{}
 	values.Set("returnUrl", returnURL)
+	return u + "?" + values.Encode()
+}
+
+func buildMangouPaymentQRURL(baseURL string, paymentID string, target string) string {
+	u := strings.TrimRight(baseURL, "/") + "/v1/payments/" + url.PathEscape(paymentID) + "/qr.svg"
+	values := url.Values{}
+	values.Set("target", target)
 	return u + "?" + values.Encode()
 }
 

@@ -43,5 +43,8 @@ func SetMangouAgentRouter(router *gin.Engine) {
 	adminRouter.Use(middleware.RootAuth())
 	{
 		adminRouter.POST("/providers/sync", controller.MangouAdminSyncProviders)
+		adminRouter.GET("/payment-products", controller.MangouAdminListPaymentProducts)
+		adminRouter.POST("/payment-products", controller.MangouAdminCreatePaymentProduct)
+		adminRouter.PUT("/payment-products/:id", controller.MangouAdminUpdatePaymentProduct)
 	}
 }

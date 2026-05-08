@@ -2,6 +2,7 @@ package controller
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,7 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
@@ -36,7 +38,7 @@ func setupMangouAgentTestDB(t *testing.T) *gorm.DB {
 	require.NoError(t, err)
 	model.DB = db
 	model.LOG_DB = db
-	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Token{}, &model.Task{}, &model.Log{}, &model.TopUp{}, &model.Channel{}, &model.Ability{}, &model.Model{}, &model.Vendor{}, &model.MangouProviderPricing{}))
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Token{}, &model.Task{}, &model.Log{}, &model.TopUp{}, &model.Channel{}, &model.Ability{}, &model.Model{}, &model.Vendor{}, &model.MangouProviderPricing{}, &model.PaymentProduct{}))
 
 	t.Cleanup(func() {
 		sqlDB, err := db.DB()
@@ -291,6 +293,77 @@ func TestMangouAgentRechargeQRCreatesDemoPayment(t *testing.T) {
 	require.Equal(t, common.TopUpStatusPending, topUp.Status)
 	require.Equal(t, "mangou_demo", topUp.PaymentProvider)
 	require.EqualValues(t, 100, topUp.Amount)
+}
+
+func TestMangouAgentRechargeQRUsesCreemWhenConfigured(t *testing.T) {
+	db := setupMangouAgentTestDB(t)
+	originalAPIKey := setting.CreemApiKey
+	originalWebhookSecret := setting.CreemWebhookSecret
+	originalGen := genMangouCreemCheckoutLink
+	setting.CreemApiKey = "creem_test_key"
+	setting.CreemWebhookSecret = "creem_test_secret"
+	setting.CreemProducts = "[]"
+	genMangouCreemCheckoutLink = func(ctx context.Context, referenceId string, product *CreemProduct, email string, username string) (string, error) {
+		require.Equal(t, "prod_agent_100", product.ProductId)
+		require.Equal(t, "agent@example.com", email)
+		require.NotEmpty(t, referenceId)
+		return "https://checkout.creem.io/ch_test_agent", nil
+	}
+	t.Cleanup(func() {
+		setting.CreemApiKey = originalAPIKey
+		setting.CreemWebhookSecret = originalWebhookSecret
+		genMangouCreemCheckoutLink = originalGen
+	})
+	require.NoError(t, db.Create(&model.PaymentProduct{
+		Provider:  model.PaymentProviderCreem,
+		ProductId: "prod_agent_100",
+		Name:      "Agent 100",
+		Price:     9.99,
+		Currency:  "USD",
+		Quota:     100,
+		Tier:      "gems_100",
+		Status:    model.PaymentProductStatusEnabled,
+	}).Error)
+
+	user := model.User{
+		Username:    "agentuser",
+		DisplayName: "agentuser",
+		Role:        common.RoleCommonUser,
+		Status:      common.UserStatusEnabled,
+		Email:       "agent@example.com",
+		Quota:       0,
+		Group:       "auto",
+	}
+	require.NoError(t, db.Create(&user).Error)
+
+	ctx, recorder := newMangouJSONContext(t, http.MethodPost, "/v1/agent/recharge-qr", map[string]any{
+		"agent_id": "hermes-mangou",
+		"tier":     "gems_100",
+	})
+	ctx.Request.Host = "mangou-newapi.example.com"
+	ctx.Request.Header.Set("X-Forwarded-Proto", "https")
+	ctx.Set("id", user.Id)
+	ctx.Set("token_name", "agent:hermes-mangou")
+
+	MangouAgentRechargeQR(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	resp := decodeMangouResponse(t, recorder)
+	require.Equal(t, true, resp["success"])
+	data := resp["data"].(map[string]any)
+	require.Equal(t, false, data["demo"])
+	require.Equal(t, "creem", data["provider"])
+	require.Equal(t, "https://checkout.creem.io/ch_test_agent", data["payment_url"])
+	require.Contains(t, data["qr_url"], "https://mangou-newapi.example.com/v1/payments/")
+	require.Contains(t, data["qr_url"], "target=")
+
+	var topUp model.TopUp
+	require.NoError(t, db.Where("trade_no = ?", data["payment_id"]).First(&topUp).Error)
+	require.Equal(t, common.TopUpStatusPending, topUp.Status)
+	require.Equal(t, model.PaymentProviderCreem, topUp.PaymentProvider)
+	require.Equal(t, model.PaymentMethodCreem, topUp.PaymentMethod)
+	require.EqualValues(t, 100, topUp.Amount)
+	require.EqualValues(t, 9.99, topUp.Money)
 }
 
 func TestMangouDemoPaymentScanMarksPaymentPaidAndCreditsUser(t *testing.T) {

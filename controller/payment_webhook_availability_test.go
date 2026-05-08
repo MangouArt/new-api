@@ -3,6 +3,7 @@ package controller
 import (
 	"testing"
 
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/stretchr/testify/require"
@@ -34,11 +35,14 @@ func TestCreemWebhookEnabledRequiresTopUpAndWebhookConfig(t *testing.T) {
 	originalAPIKey := setting.CreemApiKey
 	originalProducts := setting.CreemProducts
 	originalWebhookSecret := setting.CreemWebhookSecret
+	originalDB := model.DB
 	t.Cleanup(func() {
 		setting.CreemApiKey = originalAPIKey
 		setting.CreemProducts = originalProducts
 		setting.CreemWebhookSecret = originalWebhookSecret
+		model.DB = originalDB
 	})
+	model.DB = nil
 
 	setting.CreemWebhookSecret = ""
 	setting.CreemApiKey = "creem_api_key"

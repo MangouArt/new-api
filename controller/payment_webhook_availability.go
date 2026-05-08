@@ -3,6 +3,7 @@ package controller
 import (
 	"strings"
 
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 )
@@ -24,8 +25,7 @@ func isStripeWebhookEnabled() bool {
 func isCreemTopUpEnabled() bool {
 	products := strings.TrimSpace(setting.CreemProducts)
 	return strings.TrimSpace(setting.CreemApiKey) != "" &&
-		products != "" &&
-		products != "[]"
+		((products != "" && products != "[]") || model.HasActivePaymentProducts(model.PaymentProviderCreem))
 }
 
 func isCreemWebhookConfigured() bool {
