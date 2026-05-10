@@ -572,7 +572,7 @@ func MangouPaymentQRSVG(c *gin.Context) {
 		paymentURL = buildMangouDemoPaymentURL(mangouPublicBaseURL(c), paymentID, "")
 	case model.PaymentProviderCreem:
 		paymentURL = strings.TrimSpace(c.Query("target"))
-		if paymentURL == "" || common.ValidateRedirectURL(paymentURL) != nil {
+		if paymentURL == "" || validateMangouCreemPaymentTarget(paymentURL) != nil {
 			c.String(http.StatusBadRequest, "valid target is required")
 			return
 		}
@@ -1201,6 +1201,21 @@ func buildMangouPaymentQRURL(baseURL string, paymentID string, target string) st
 	values := url.Values{}
 	values.Set("target", target)
 	return u + "?" + values.Encode()
+}
+
+func validateMangouCreemPaymentTarget(rawURL string) error {
+	parsedURL, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid URL format: %s", err.Error())
+	}
+	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
+		return fmt.Errorf("invalid URL scheme: only http and https are allowed")
+	}
+	domain := strings.ToLower(parsedURL.Hostname())
+	if domain == "creem.io" || strings.HasSuffix(domain, ".creem.io") {
+		return nil
+	}
+	return fmt.Errorf("domain %s is not an allowed Creem checkout domain", domain)
 }
 
 func completeMangouDemoPayment(paymentID string, callerIP string) (*model.TopUp, *model.User, error) {
