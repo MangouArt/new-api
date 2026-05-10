@@ -36,6 +36,8 @@ func SetMangouAgentRouter(router *gin.Engine) {
 
 	router.GET("/v1/payments/:payment_id/qr.svg", controller.MangouPaymentQRSVG)
 	router.HEAD("/v1/payments/:payment_id/qr.svg", controller.MangouPaymentQRSVG)
+	router.GET("/v1/payments/:payment_id/qr.png", controller.MangouPaymentQRPNG)
+	router.HEAD("/v1/payments/:payment_id/qr.png", controller.MangouPaymentQRPNG)
 	router.GET("/v1/payments/demo-scan/:payment_id", controller.MangouDemoPaymentScan)
 
 	adminRouter := router.Group("/api/mangou")

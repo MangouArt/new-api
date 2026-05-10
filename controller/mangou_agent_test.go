@@ -356,6 +356,8 @@ func TestMangouAgentRechargeQRUsesCreemWhenConfigured(t *testing.T) {
 	require.Equal(t, "https://checkout.creem.io/ch_test_agent", data["payment_url"])
 	require.Contains(t, data["qr_url"], "https://mangou-newapi.example.com/v1/payments/")
 	require.Contains(t, data["qr_url"], "target=")
+	require.Contains(t, data["qr_png_url"], "https://mangou-newapi.example.com/v1/payments/")
+	require.Contains(t, data["qr_png_url"], "target=")
 
 	var topUp model.TopUp
 	require.NoError(t, db.Where("trade_no = ?", data["payment_id"]).First(&topUp).Error)
@@ -388,6 +390,30 @@ func TestMangouPaymentQRSVGAllowsCreemCheckoutTarget(t *testing.T) {
 	require.Equal(t, http.StatusOK, recorder.Code)
 	require.Contains(t, recorder.Header().Get("Content-Type"), "image/svg+xml")
 	require.Contains(t, recorder.Body.String(), "<svg")
+}
+
+func TestMangouPaymentQRPNGAllowsCreemCheckoutTarget(t *testing.T) {
+	db := setupMangouAgentTestDB(t)
+	topUp := model.TopUp{
+		UserId:          1,
+		Amount:          100,
+		Money:           5,
+		TradeNo:         "pay_creem_png_qr",
+		PaymentMethod:   model.PaymentMethodCreem,
+		PaymentProvider: model.PaymentProviderCreem,
+		CreateTime:      time.Now().Unix(),
+		Status:          common.TopUpStatusPending,
+	}
+	require.NoError(t, db.Create(&topUp).Error)
+
+	ctx, recorder := newMangouJSONContext(t, http.MethodGet, "/v1/payments/pay_creem_png_qr/qr.png?target=https%3A%2F%2Fcheckout.creem.io%2Fch_test_agent", nil)
+	ctx.Params = gin.Params{{Key: "payment_id", Value: "pay_creem_png_qr"}}
+
+	MangouPaymentQRPNG(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Contains(t, recorder.Header().Get("Content-Type"), "image/png")
+	require.Equal(t, []byte{0x89, 'P', 'N', 'G'}, recorder.Body.Bytes()[:4])
 }
 
 func TestMangouPaymentQRSVGRejectsNonCreemCheckoutTarget(t *testing.T) {

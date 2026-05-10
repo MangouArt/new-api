@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"html"
+	"image"
+	"image/png"
 	"io"
 	"net/http"
 	"net/url"
@@ -225,6 +227,7 @@ The response includes:
 
 - `+"`payment_id`"+`
 - `+"`qr_url`"+`
+- `+"`qr_png_url`"+`
 - `+"`payment_url`"+`
 - `+"`amount`"+`
 - `+"`currency`"+`
@@ -233,12 +236,13 @@ The response includes:
 
 Validation flow:
 
-1. `+"`GET qr_url`"+` and verify the response `+"`Content-Type`"+` contains `+"`image/svg+xml`"+`.
-2. Show the QR code or open `+"`payment_url`"+`.
-3. If `+"`demo`"+` is `+"`false`"+`, the user must complete the external checkout and the payment provider webhook will credit the account.
-4. If `+"`demo`"+` is `+"`true`"+`, opening `+"`payment_url`"+` simulates payment completion.
-5. Recheck `+"`/v1/agent/balance`"+` and confirm the balance increased.
-6. Repeating the same payment callback must be idempotent and must not double-credit the account.
+1. In chat channels, send `+"`qr_png_url`"+` as an image attachment whenever image upload is available. Do not only paste JSON or a raw URL.
+2. If PNG upload is unavailable, `+"`GET qr_url`"+` and verify the response `+"`Content-Type`"+` contains `+"`image/svg+xml`"+`, then render/show that QR code.
+3. As a fallback, show `+"`payment_url`"+` as a clickable checkout link.
+4. If `+"`demo`"+` is `+"`false`"+`, the user must complete the external checkout and the payment provider webhook will credit the account.
+5. If `+"`demo`"+` is `+"`true`"+`, opening `+"`payment_url`"+` simulates payment completion.
+6. Recheck `+"`/v1/agent/balance`"+` and confirm the balance increased.
+7. Repeating the same payment callback must be idempotent and must not double-credit the account.
 
 Legacy protected aliases also exist: `+"`POST /v1/agent/recharge`"+`, `+"`POST /v1/agent/topup`"+`, `+"`POST /v1/agent/payment`"+`, and `+"`POST /v1/agents/recharge-qr`"+`.
 
@@ -490,6 +494,7 @@ func MangouAgentRechargeQR(c *gin.Context) {
 		"currency":       "credits",
 		"demo":           true,
 		"qr_url":         baseURL + "/v1/payments/" + paymentID + "/qr.svg",
+		"qr_png_url":     baseURL + "/v1/payments/" + paymentID + "/qr.png",
 		"payment_url":    paymentURL,
 		"instructions":   "Show qr_url or payment_url to the user. Opening payment_url simulates a completed payment and credits the account.",
 	})
@@ -539,6 +544,7 @@ func respondMangouAgentCreemRecharge(c *gin.Context, userID int, agentID string,
 		"demo":           false,
 		"provider":       model.PaymentProviderCreem,
 		"qr_url":         qrURL,
+		"qr_png_url":     buildMangouPaymentQRPNGURL(baseURL, paymentID, checkoutURL),
 		"payment_url":    checkoutURL,
 		"instructions":   "Show qr_url or payment_url to the user. Creem webhook will credit the account after checkout.completed is paid.",
 	})
@@ -560,6 +566,14 @@ func selectMangouAgentCreemProduct(amount int64, tier string) (*CreemProduct, er
 }
 
 func MangouPaymentQRSVG(c *gin.Context) {
+	mangouPaymentQR(c, "svg")
+}
+
+func MangouPaymentQRPNG(c *gin.Context) {
+	mangouPaymentQR(c, "png")
+}
+
+func mangouPaymentQR(c *gin.Context, format string) {
 	paymentID := strings.TrimSpace(c.Param("payment_id"))
 	topUp := model.GetTopUpByTradeNo(paymentID)
 	if topUp == nil {
@@ -583,6 +597,15 @@ func MangouPaymentQRSVG(c *gin.Context) {
 	svg, err := mangouQRCodeSVG(paymentURL)
 	if err != nil {
 		common.ApiError(c, err)
+		return
+	}
+	if format == "png" {
+		pngBytes, err := mangouQRCodePNG(paymentURL)
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		c.Data(http.StatusOK, "image/png", pngBytes)
 		return
 	}
 	c.Data(http.StatusOK, "image/svg+xml; charset=utf-8", []byte(svg))
@@ -1203,6 +1226,13 @@ func buildMangouPaymentQRURL(baseURL string, paymentID string, target string) st
 	return u + "?" + values.Encode()
 }
 
+func buildMangouPaymentQRPNGURL(baseURL string, paymentID string, target string) string {
+	u := strings.TrimRight(baseURL, "/") + "/v1/payments/" + url.PathEscape(paymentID) + "/qr.png"
+	values := url.Values{}
+	values.Set("target", target)
+	return u + "?" + values.Encode()
+}
+
 func validateMangouCreemPaymentTarget(rawURL string) error {
 	parsedURL, err := url.Parse(rawURL)
 	if err != nil {
@@ -1262,11 +1292,7 @@ func completeMangouDemoPayment(paymentID string, callerIP string) (*model.TopUp,
 }
 
 func mangouQRCodeSVG(target string) (string, error) {
-	code, err := qr.Encode(target, qr.M, qr.Auto)
-	if err != nil {
-		return "", err
-	}
-	scaled, err := barcode.Scale(code, 256, 256)
+	scaled, err := mangouQRCodeImage(target)
 	if err != nil {
 		return "", err
 	}
@@ -1288,6 +1314,30 @@ func mangouQRCodeSVG(target string) (string, error) {
 	}
 	b.WriteString(`</svg>`)
 	return b.String(), nil
+}
+
+func mangouQRCodePNG(target string) ([]byte, error) {
+	scaled, err := mangouQRCodeImage(target)
+	if err != nil {
+		return nil, err
+	}
+	var b bytes.Buffer
+	if err := png.Encode(&b, scaled); err != nil {
+		return nil, err
+	}
+	return b.Bytes(), nil
+}
+
+func mangouQRCodeImage(target string) (image.Image, error) {
+	code, err := qr.Encode(target, qr.M, qr.Auto)
+	if err != nil {
+		return nil, err
+	}
+	scaled, err := barcode.Scale(code, 256, 256)
+	if err != nil {
+		return nil, err
+	}
+	return scaled, nil
 }
 
 func submitMangouUpstreamTask(req mangouAgentTaskRequest, channel *model.Channel) (*mangouUpstreamTaskResult, bool, error) {
