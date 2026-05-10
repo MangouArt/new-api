@@ -188,7 +188,7 @@ Server behavior:
 - Add routes.
 - Keep upstream HTTP submission as the next milestone, implemented through provider-specific `TaskAdaptor`s.
 
-## Agent Balance And Demo Recharge
+## Agent Balance And Recharge
 
 Protected endpoints use the same `Authorization: Bearer ${BILLING_TOKEN}` header as task submission:
 
@@ -235,9 +235,11 @@ Response:
   "payment_status": "pending",
   "amount": 100,
   "currency": "credits",
-  "demo": true,
+  "provider": "creem",
+  "demo": false,
   "qr_url": "https://mangou-newapi.zeabur.app/v1/payments/pay_.../qr.svg",
-  "payment_url": "https://mangou-newapi.zeabur.app/v1/payments/demo-scan/pay_..."
+  "qr_png_url": "https://mangou-newapi.zeabur.app/v1/payments/pay_.../qr.png",
+  "payment_url": "https://creem.io/test/checkout/prod_.../ch_..."
 }
 ```
 
@@ -245,10 +247,13 @@ Public scan endpoints:
 
 ```text
 GET /v1/payments/{payment_id}/qr.svg
+GET /v1/payments/{payment_id}/qr.png
 GET /v1/payments/demo-scan/{payment_id}
 ```
 
 The scan endpoint is idempotent. The first successful scan marks the `top_ups` row `success` and adds `amount` credits to the NewAPI user quota. Repeated scans return the success page without adding quota again.
+
+When a task submit fails with an insufficient-balance message such as `quota is not enough`, `user quota is not enough`, or `余额不足`, the agent should call `POST /v1/agent/recharge-qr`, send `qr_png_url` as a chat image attachment, include `payment_url` as a fallback link, ask the user to scan/recharge, poll `/v1/agent/balance` every 10-20 seconds, and retry the original task once after the balance increases.
 
 ## Provider Runtime
 

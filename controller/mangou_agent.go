@@ -246,6 +246,18 @@ Validation flow:
 
 Legacy protected aliases also exist: `+"`POST /v1/agent/recharge`"+`, `+"`POST /v1/agent/topup`"+`, `+"`POST /v1/agent/payment`"+`, and `+"`POST /v1/agents/recharge-qr`"+`.
 
+## Insufficient Balance Flow
+
+When a task submit or quote fails because balance is insufficient, for example the returned `+"`message`"+` contains `+"`quota is not enough`"+`, `+"`user quota is not enough`"+`, `+"`余额不足`"+`, or another explicit insufficient-balance phrase:
+
+1. Do not ask the user to find the wallet page.
+2. Call `+"`POST /v1/agent/recharge-qr`"+` with `+"`tier: \"gems_100\"`"+` unless the user requested a different tier.
+3. In chat channels, immediately send `+"`qr_png_url`"+` as an image attachment and ask the user to scan it to recharge. Do not only paste JSON.
+4. Also include `+"`payment_url`"+` as a fallback clickable link.
+5. Do not simulate payment for real providers where `+"`demo`"+` is `+"`false`"+`; wait for the external payment provider webhook.
+6. Poll `+"`GET /v1/agent/balance`"+` every 10-20 seconds until the balance increases or the user asks to stop.
+7. After balance increases, retry the original task once with the same payload.
+
 ## Submit Task
 
 `+"```http"+`
