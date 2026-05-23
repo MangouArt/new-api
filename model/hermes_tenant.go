@@ -42,6 +42,7 @@ type HermesTenant struct {
 	TenantID            string             `json:"tenant_id" gorm:"type:varchar(64);uniqueIndex;not null"`
 	ServiceName         string             `json:"service_name" gorm:"type:varchar(128);index;not null"`
 	VolumeName          string             `json:"volume_name" gorm:"type:varchar(128);index;not null"`
+	HermesAdminToken    string             `json:"-" gorm:"type:varchar(256)"`
 	Status              HermesTenantStatus `json:"status" gorm:"type:varchar(32);index;not null"`
 	ZeaburProjectID     string             `json:"zeabur_project_id" gorm:"type:varchar(128)"`
 	ZeaburEnvironmentID string             `json:"zeabur_environment_id" gorm:"type:varchar(128)"`
@@ -191,6 +192,24 @@ func EnsureHermesTenantRuntimeToken(tenant *HermesTenant) (*Token, bool, error) 
 	}
 	tenant.TenantTokenID = token.Id
 	return &token, true, nil
+}
+
+func EnsureHermesTenantAdminToken(tenant *HermesTenant) (string, bool, error) {
+	if tenant == nil || tenant.ID == 0 {
+		return "", false, errors.New("invalid hermes tenant")
+	}
+	if tenant.HermesAdminToken != "" {
+		return tenant.HermesAdminToken, false, nil
+	}
+	adminToken, err := common.GenerateRandomCharsKey(48)
+	if err != nil {
+		return "", false, err
+	}
+	if err := DB.Model(tenant).Update("hermes_admin_token", adminToken).Error; err != nil {
+		return "", false, err
+	}
+	tenant.HermesAdminToken = adminToken
+	return adminToken, true, nil
 }
 
 func ensureHermesTenantTokenShape(token *Token) (*Token, error) {

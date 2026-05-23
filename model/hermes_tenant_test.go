@@ -1,6 +1,8 @@
 package model
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
@@ -51,6 +53,31 @@ func TestEnsureHermesTenantRuntimeTokenCreatesAndReusesToken(t *testing.T) {
 	require.False(t, created)
 	require.Equal(t, token.Id, sameToken.Id)
 	require.Equal(t, token.GetFullKey(), sameToken.GetFullKey())
+}
+
+func TestEnsureHermesTenantAdminTokenCreatesAndReusesSecret(t *testing.T) {
+	truncateTables(t)
+
+	tenant, _, err := EnsureHermesTenantForUser(42)
+	require.NoError(t, err)
+
+	adminToken, created, err := EnsureHermesTenantAdminToken(tenant)
+	require.NoError(t, err)
+	require.True(t, created)
+	require.NotEmpty(t, adminToken)
+
+	tenant, err = GetHermesTenantByUserID(42)
+	require.NoError(t, err)
+	require.Equal(t, adminToken, tenant.HermesAdminToken)
+	encodedTenant, err := json.Marshal(tenant)
+	require.NoError(t, err)
+	require.False(t, strings.Contains(string(encodedTenant), "hermes_admin_token"))
+	require.False(t, strings.Contains(string(encodedTenant), adminToken))
+
+	sameToken, created, err := EnsureHermesTenantAdminToken(tenant)
+	require.NoError(t, err)
+	require.False(t, created)
+	require.Equal(t, adminToken, sameToken)
 }
 
 func TestUpdateHermesTenantProvisioningStoresZeaburBinding(t *testing.T) {
