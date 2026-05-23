@@ -2,6 +2,7 @@ package controller
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -110,4 +111,32 @@ func TestGetHermesTenantSelfDoesNotLeakAdminToken(t *testing.T) {
 	resp := decodeAPIResponse(t, recorder)
 	require.True(t, resp.Success)
 	require.NotContains(t, recorder.Body.String(), "hermes_admin_token")
+}
+
+func TestProxyHermesTenantDashboardForwardsThroughNewAPI(t *testing.T) {
+	setupHermesTenantControllerTestDB(t)
+
+	var sawAdminToken string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/dashboard/page", r.URL.Path)
+		require.Equal(t, "1", r.URL.Query().Get("tab"))
+		sawAdminToken = r.Header.Get("X-Hermes-Admin-Token")
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("dashboard ok"))
+	}))
+	t.Cleanup(server.Close)
+
+	tenant, _, err := model.EnsureHermesTenantForUser(42)
+	require.NoError(t, err)
+	adminToken, _, err := model.EnsureHermesTenantAdminToken(tenant)
+	require.NoError(t, err)
+	require.NoError(t, model.UpdateHermesTenantProvisioning(tenant, "project", "env", "service", "volume", server.URL+"/dashboard"))
+
+	ctx, recorder := newAuthenticatedContext(t, http.MethodGet, "/api/hermes/tenant/dashboard/page?tab=1", nil, 42)
+	ctx.Params = gin.Params{{Key: "proxy_path", Value: "/page"}}
+	ProxyHermesTenantDashboard(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Equal(t, "dashboard ok", recorder.Body.String())
+	require.Equal(t, adminToken, sawAdminToken)
 }

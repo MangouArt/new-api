@@ -271,6 +271,7 @@ func SetApiRouter(router *gin.Engine) {
 			{
 				hermesSelfRoute.GET("/self", controller.GetHermesTenantSelf)
 				hermesSelfRoute.POST("/self", controller.EnsureHermesTenantSelf)
+				hermesSelfRoute.Any("/dashboard/*proxy_path", controller.ProxyHermesTenantDashboard)
 			}
 
 			hermesAdminRoute := hermesRoute.Group("/tenants")
