@@ -287,6 +287,8 @@ func migrateDB() error {
 		&UserOAuthBinding{},
 		&MangouProviderPricing{},
 		&PaymentProduct{},
+		&HermesTenant{},
+		&HermesPairingSession{},
 	)
 	if err != nil {
 		return err
@@ -337,6 +339,8 @@ func migrateDBFast() error {
 		{&UserOAuthBinding{}, "UserOAuthBinding"},
 		{&MangouProviderPricing{}, "MangouProviderPricing"},
 		{&PaymentProduct{}, "PaymentProduct"},
+		{&HermesTenant{}, "HermesTenant"},
+		{&HermesPairingSession{}, "HermesPairingSession"},
 	}
 	// 动态计算migration数量，确保errChan缓冲区足够大
 	errChan := make(chan error, len(migrations))

@@ -264,6 +264,24 @@ func SetApiRouter(router *gin.Engine) {
 			tokenRoute.POST("/batch/keys", middleware.CriticalRateLimit(), middleware.DisableCache(), controller.GetTokenKeysBatch)
 		}
 
+		hermesRoute := apiRouter.Group("/hermes")
+		{
+			hermesSelfRoute := hermesRoute.Group("/tenant")
+			hermesSelfRoute.Use(middleware.UserAuth())
+			{
+				hermesSelfRoute.GET("/self", controller.GetHermesTenantSelf)
+				hermesSelfRoute.POST("/self", controller.EnsureHermesTenantSelf)
+			}
+
+			hermesAdminRoute := hermesRoute.Group("/tenants")
+			hermesAdminRoute.Use(middleware.AdminAuth())
+			{
+				hermesAdminRoute.GET("/user/:user_id", controller.AdminGetHermesTenantByUser)
+				hermesAdminRoute.POST("/user/:user_id", controller.AdminEnsureHermesTenantByUser)
+				hermesAdminRoute.PUT("/user/:user_id/provisioning", controller.AdminUpdateHermesTenantProvisioning)
+			}
+		}
+
 		usageRoute := apiRouter.Group("/usage")
 		usageRoute.Use(middleware.CORS(), middleware.CriticalRateLimit())
 		{
