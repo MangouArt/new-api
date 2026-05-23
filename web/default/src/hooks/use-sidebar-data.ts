@@ -8,6 +8,7 @@ import {
   Users,
   Ticket,
   User,
+  Bot,
   Command,
   Radio,
   FlaskConical,
@@ -67,6 +68,11 @@ export function useSidebarData(): SidebarData {
             title: t('API Keys'),
             url: '/keys',
             icon: Key,
+          },
+          {
+            title: t('Hermes Agent'),
+            url: '/hermes',
+            icon: Bot,
           },
           {
             title: t('Usage Logs'),
