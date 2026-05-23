@@ -289,6 +289,47 @@ func GetLatestHermesPairingSession(tenantID int) (*HermesPairingSession, error) 
 	return &session, nil
 }
 
+func GetHermesPairingSession(tenantID int, sessionID int) (*HermesPairingSession, error) {
+	var session HermesPairingSession
+	err := DB.Where("tenant_id = ? AND id = ?", tenantID, sessionID).First(&session).Error
+	if err != nil {
+		return nil, err
+	}
+	return &session, nil
+}
+
+func RecordHermesPairingURL(tenant *HermesTenant, session *HermesPairingSession, pairingURL string, exitCode int, outputSummary string) error {
+	if tenant == nil || tenant.ID == 0 {
+		return errors.New("invalid hermes tenant")
+	}
+	if session == nil || session.ID == 0 || session.TenantID != tenant.ID {
+		return errors.New("invalid hermes pairing session")
+	}
+	now := common.GetTimestamp()
+	return DB.Transaction(func(tx *gorm.DB) error {
+		updates := map[string]any{
+			"status":                 HermesPairingSessionStatusURLGenerated,
+			"pairing_url":            pairingURL,
+			"command_exit_code":      exitCode,
+			"command_output_summary": outputSummary,
+			"completed_at":           now,
+		}
+		if err := tx.Model(session).Updates(updates).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(tenant).Update("status", HermesTenantStatusPairingURLGenerated).Error; err != nil {
+			return err
+		}
+		session.Status = HermesPairingSessionStatusURLGenerated
+		session.PairingURL = pairingURL
+		session.CommandExitCode = &exitCode
+		session.CommandOutputSummary = outputSummary
+		session.CompletedAt = now
+		tenant.Status = HermesTenantStatusPairingURLGenerated
+		return nil
+	})
+}
+
 func (tenant *HermesTenant) MarkPairingRequired() error {
 	if tenant == nil || tenant.ID == 0 {
 		return errors.New("invalid hermes tenant")

@@ -3,6 +3,7 @@ package controller
 import (
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -139,4 +140,74 @@ func TestProxyHermesTenantDashboardForwardsThroughNewAPI(t *testing.T) {
 	require.Equal(t, http.StatusOK, recorder.Code)
 	require.Equal(t, "dashboard ok", recorder.Body.String())
 	require.Equal(t, adminToken, sawAdminToken)
+}
+
+func TestHermesPairingSessionControlPlaneStoresURL(t *testing.T) {
+	setupHermesTenantControllerTestDB(t)
+
+	createCtx, createRecorder := newAuthenticatedContext(t, http.MethodPost, "/api/hermes/tenants/user/42/pairing-sessions", nil, 1)
+	createCtx.Params = gin.Params{{Key: "user_id", Value: "42"}}
+	AdminCreateHermesPairingSessionByUser(createCtx)
+
+	require.Equal(t, http.StatusOK, createRecorder.Code)
+	createResp := decodeAPIResponse(t, createRecorder)
+	require.True(t, createResp.Success)
+
+	var createData map[string]any
+	require.NoError(t, common.Unmarshal(createResp.Data, &createData))
+	session := createData["session"].(map[string]any)
+	sessionID := int(session["id"].(float64))
+	require.Equal(t, "pending", session["status"])
+
+	recordCtx, recordRecorder := newAuthenticatedContext(t, http.MethodPut, "/api/hermes/tenants/user/42/pairing-sessions/"+strconv.Itoa(sessionID)+"/url", map[string]any{
+		"pairing_url":            "https://open.feishu.cn/pair?state=abc",
+		"command_exit_code":      0,
+		"command_output_summary": "url generated",
+	}, 1)
+	recordCtx.Params = gin.Params{
+		{Key: "user_id", Value: "42"},
+		{Key: "session_id", Value: strconv.Itoa(sessionID)},
+	}
+	AdminRecordHermesPairingURLByUser(recordCtx)
+
+	require.Equal(t, http.StatusOK, recordRecorder.Code)
+	recordResp := decodeAPIResponse(t, recordRecorder)
+	require.True(t, recordResp.Success)
+
+	selfCtx, selfRecorder := newAuthenticatedContext(t, http.MethodGet, "/api/hermes/tenant/pairing/latest", nil, 42)
+	GetHermesTenantPairingSelf(selfCtx)
+
+	selfResp := decodeAPIResponse(t, selfRecorder)
+	require.True(t, selfResp.Success)
+	var selfData map[string]any
+	require.NoError(t, common.Unmarshal(selfResp.Data, &selfData))
+	latest := selfData["session"].(map[string]any)
+	require.Equal(t, "url_generated", latest["status"])
+	require.Equal(t, "https://open.feishu.cn/pair?state=abc", latest["pairing_url"])
+
+	tenant, err := model.GetHermesTenantByUserID(42)
+	require.NoError(t, err)
+	require.Equal(t, model.HermesTenantStatusPairingURLGenerated, tenant.Status)
+}
+
+func TestAdminRecordHermesPairingURLRejectsInvalidURL(t *testing.T) {
+	setupHermesTenantControllerTestDB(t)
+
+	tenant, _, err := model.EnsureHermesTenantForUser(42)
+	require.NoError(t, err)
+	session, err := model.CreateHermesPairingSession(tenant, 12345)
+	require.NoError(t, err)
+
+	ctx, recorder := newAuthenticatedContext(t, http.MethodPut, "/api/hermes/tenants/user/42/pairing-sessions/1/url", map[string]any{
+		"pairing_url": "not-a-url",
+	}, 1)
+	ctx.Params = gin.Params{
+		{Key: "user_id", Value: "42"},
+		{Key: "session_id", Value: strconv.Itoa(session.ID)},
+	}
+	AdminRecordHermesPairingURLByUser(ctx)
+
+	resp := decodeAPIResponse(t, recorder)
+	require.False(t, resp.Success)
+	require.Contains(t, resp.Message, "invalid pairing url")
 }

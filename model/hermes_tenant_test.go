@@ -124,3 +124,28 @@ func TestCreateHermesPairingSession(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, session.ID, latest.ID)
 }
+
+func TestRecordHermesPairingURLUpdatesSessionAndTenant(t *testing.T) {
+	truncateTables(t)
+
+	tenant, _, err := EnsureHermesTenantForUser(9)
+	require.NoError(t, err)
+	session, err := CreateHermesPairingSession(tenant, 12345)
+	require.NoError(t, err)
+
+	err = RecordHermesPairingURL(tenant, session, "https://open.feishu.cn/pair", 0, "ok")
+	require.NoError(t, err)
+
+	updatedSession, err := GetHermesPairingSession(tenant.ID, session.ID)
+	require.NoError(t, err)
+	require.Equal(t, HermesPairingSessionStatusURLGenerated, updatedSession.Status)
+	require.Equal(t, "https://open.feishu.cn/pair", updatedSession.PairingURL)
+	require.NotNil(t, updatedSession.CommandExitCode)
+	require.Equal(t, 0, *updatedSession.CommandExitCode)
+	require.Equal(t, "ok", updatedSession.CommandOutputSummary)
+	require.NotZero(t, updatedSession.CompletedAt)
+
+	updatedTenant, err := GetHermesTenantByUserID(9)
+	require.NoError(t, err)
+	require.Equal(t, HermesTenantStatusPairingURLGenerated, updatedTenant.Status)
+}

@@ -22,6 +22,16 @@ type hermesTenantProvisionRequest struct {
 	PublicURL           string `json:"public_url"`
 }
 
+type hermesPairingSessionRequest struct {
+	ExpiresAt int64 `json:"expires_at"`
+}
+
+type hermesPairingURLRequest struct {
+	PairingURL           string `json:"pairing_url"`
+	CommandExitCode      int    `json:"command_exit_code"`
+	CommandOutputSummary string `json:"command_output_summary"`
+}
+
 func GetHermesTenantSelf(c *gin.Context) {
 	tenant, err := model.GetHermesTenantByUserID(c.GetInt("id"))
 	if err != nil {
@@ -38,6 +48,37 @@ func GetHermesTenantSelf(c *gin.Context) {
 	common.ApiSuccess(c, gin.H{
 		"tenant": tenant,
 		"exists": true,
+	})
+}
+
+func GetHermesTenantPairingSelf(c *gin.Context) {
+	tenant, err := model.GetHermesTenantByUserID(c.GetInt("id"))
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			common.ApiSuccess(c, gin.H{
+				"session": nil,
+				"exists":  false,
+			})
+			return
+		}
+		common.ApiError(c, err)
+		return
+	}
+	session, err := model.GetLatestHermesPairingSession(tenant.ID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			common.ApiSuccess(c, gin.H{
+				"session": nil,
+				"exists":  false,
+			})
+			return
+		}
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{
+		"session": session,
+		"exists":  true,
 	})
 }
 
@@ -222,4 +263,86 @@ func AdminUpdateHermesTenantProvisioning(c *gin.Context) {
 	common.ApiSuccess(c, gin.H{
 		"tenant": tenant,
 	})
+}
+
+func AdminCreateHermesPairingSessionByUser(c *gin.Context) {
+	userID, err := strconv.Atoi(c.Param("user_id"))
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	var req hermesPairingSessionRequest
+	if c.Request.Body != nil {
+		_ = c.ShouldBindJSON(&req)
+	}
+	tenant, _, err := model.EnsureHermesTenantForUser(userID)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	expiresAt := req.ExpiresAt
+	if expiresAt <= 0 {
+		expiresAt = common.GetTimestamp() + 600
+	}
+	session, err := model.CreateHermesPairingSession(tenant, expiresAt)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if err := tenant.MarkPairingRequired(); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{
+		"session": session,
+		"tenant":  tenant,
+	})
+}
+
+func AdminRecordHermesPairingURLByUser(c *gin.Context) {
+	userID, err := strconv.Atoi(c.Param("user_id"))
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	sessionID, err := strconv.Atoi(c.Param("session_id"))
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	var req hermesPairingURLRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if !isValidHTTPURL(req.PairingURL) {
+		common.ApiError(c, errors.New("invalid pairing url"))
+		return
+	}
+	tenant, err := model.GetHermesTenantByUserID(userID)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	session, err := model.GetHermesPairingSession(tenant.ID, sessionID)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if err := model.RecordHermesPairingURL(tenant, session, req.PairingURL, req.CommandExitCode, req.CommandOutputSummary); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{
+		"session": session,
+		"tenant":  tenant,
+	})
+}
+
+func isValidHTTPURL(rawURL string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return false
+	}
+	return (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Host != ""
 }
