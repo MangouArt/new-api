@@ -84,9 +84,22 @@ func AdminEnsureHermesTenantByUser(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	token, tokenCreated, err := model.EnsureHermesTenantRuntimeToken(tenant)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	tenant, err = model.GetHermesTenantByUserID(userID)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
 	common.ApiSuccess(c, gin.H{
-		"tenant":  tenant,
-		"created": created,
+		"tenant":               tenant,
+		"created":              created,
+		"tenant_token":         token.GetFullKey(),
+		"tenant_token_id":      token.Id,
+		"tenant_token_created": tokenCreated,
 	})
 }
 

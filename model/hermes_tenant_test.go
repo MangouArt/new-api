@@ -3,6 +3,7 @@ package model
 import (
 	"testing"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/stretchr/testify/require"
 )
 
@@ -22,6 +23,34 @@ func TestEnsureHermesTenantForUserCreatesStableTenant(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, created)
 	require.Equal(t, tenant.ID, sameTenant.ID)
+}
+
+func TestEnsureHermesTenantRuntimeTokenCreatesAndReusesToken(t *testing.T) {
+	truncateTables(t)
+
+	tenant, _, err := EnsureHermesTenantForUser(42)
+	require.NoError(t, err)
+
+	token, created, err := EnsureHermesTenantRuntimeToken(tenant)
+	require.NoError(t, err)
+	require.True(t, created)
+	require.Equal(t, 42, token.UserId)
+	require.Equal(t, HermesTenantTokenName, token.Name)
+	require.NotEmpty(t, token.GetFullKey())
+	require.Equal(t, common.TokenStatusEnabled, token.Status)
+	require.True(t, token.UnlimitedQuota)
+	require.Equal(t, hermesTenantTokenGroup, token.Group)
+	require.True(t, token.CrossGroupRetry)
+
+	tenant, err = GetHermesTenantByUserID(42)
+	require.NoError(t, err)
+	require.Equal(t, token.Id, tenant.TenantTokenID)
+
+	sameToken, created, err := EnsureHermesTenantRuntimeToken(tenant)
+	require.NoError(t, err)
+	require.False(t, created)
+	require.Equal(t, token.Id, sameToken.Id)
+	require.Equal(t, token.GetFullKey(), sameToken.GetFullKey())
 }
 
 func TestUpdateHermesTenantProvisioningStoresZeaburBinding(t *testing.T) {

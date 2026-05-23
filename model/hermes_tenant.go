@@ -38,6 +38,7 @@ const (
 type HermesTenant struct {
 	ID                  int                `json:"id" gorm:"primaryKey"`
 	UserID              int                `json:"user_id" gorm:"uniqueIndex;not null"`
+	TenantTokenID       int                `json:"tenant_token_id" gorm:"index"`
 	TenantID            string             `json:"tenant_id" gorm:"type:varchar(64);uniqueIndex;not null"`
 	ServiceName         string             `json:"service_name" gorm:"type:varchar(128);index;not null"`
 	VolumeName          string             `json:"volume_name" gorm:"type:varchar(128);index;not null"`
@@ -80,6 +81,11 @@ func BuildHermesVolumeName(userID int) string {
 	return fmt.Sprintf("hermes-user-%d-data", userID)
 }
 
+const (
+	HermesTenantTokenName  = "hermes-tenant-runtime"
+	hermesTenantTokenGroup = "auto"
+)
+
 func NewHermesTenantForUser(userID int) *HermesTenant {
 	return &HermesTenant{
 		UserID:      userID,
@@ -119,6 +125,106 @@ func EnsureHermesTenantForUser(userID int) (*HermesTenant, bool, error) {
 		return nil, false, err
 	}
 	return tenant, true, nil
+}
+
+func EnsureHermesTenantRuntimeToken(tenant *HermesTenant) (*Token, bool, error) {
+	if tenant == nil || tenant.ID == 0 || tenant.UserID <= 0 {
+		return nil, false, errors.New("invalid hermes tenant")
+	}
+
+	var token Token
+	if tenant.TenantTokenID > 0 {
+		err := DB.Where("id = ? AND user_id = ?", tenant.TenantTokenID, tenant.UserID).First(&token).Error
+		if err == nil {
+			updated, err := ensureHermesTenantTokenShape(&token)
+			if err != nil {
+				return nil, false, err
+			}
+			return updated, false, nil
+		}
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, false, err
+		}
+	}
+
+	err := DB.Where("user_id = ? AND name = ?", tenant.UserID, HermesTenantTokenName).First(&token).Error
+	if err == nil {
+		updated, err := ensureHermesTenantTokenShape(&token)
+		if err != nil {
+			return nil, false, err
+		}
+		if tenant.TenantTokenID != updated.Id {
+			if err := DB.Model(tenant).Update("tenant_token_id", updated.Id).Error; err != nil {
+				return nil, false, err
+			}
+			tenant.TenantTokenID = updated.Id
+		}
+		return updated, false, nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, false, err
+	}
+
+	key, err := common.GenerateKey()
+	if err != nil {
+		return nil, false, err
+	}
+	token = Token{
+		UserId:             tenant.UserID,
+		Name:               HermesTenantTokenName,
+		Key:                key,
+		Status:             common.TokenStatusEnabled,
+		CreatedTime:        common.GetTimestamp(),
+		AccessedTime:       common.GetTimestamp(),
+		ExpiredTime:        -1,
+		RemainQuota:        0,
+		UnlimitedQuota:     true,
+		ModelLimitsEnabled: false,
+		Group:              hermesTenantTokenGroup,
+		CrossGroupRetry:    true,
+	}
+	if err := token.Insert(); err != nil {
+		return nil, false, err
+	}
+	if err := DB.Model(tenant).Update("tenant_token_id", token.Id).Error; err != nil {
+		return nil, false, err
+	}
+	tenant.TenantTokenID = token.Id
+	return &token, true, nil
+}
+
+func ensureHermesTenantTokenShape(token *Token) (*Token, error) {
+	needsUpdate := false
+	if token.Name != HermesTenantTokenName {
+		token.Name = HermesTenantTokenName
+		needsUpdate = true
+	}
+	if token.Status != common.TokenStatusEnabled {
+		token.Status = common.TokenStatusEnabled
+		needsUpdate = true
+	}
+	if token.ExpiredTime != -1 {
+		token.ExpiredTime = -1
+		needsUpdate = true
+	}
+	if !token.UnlimitedQuota {
+		token.UnlimitedQuota = true
+		needsUpdate = true
+	}
+	if token.Group != hermesTenantTokenGroup {
+		token.Group = hermesTenantTokenGroup
+		needsUpdate = true
+	}
+	if !token.CrossGroupRetry {
+		token.CrossGroupRetry = true
+		needsUpdate = true
+	}
+	if needsUpdate {
+		if err := token.Update(); err != nil {
+			return nil, err
+		}
+	}
+	return token, nil
 }
 
 func UpdateHermesTenantProvisioning(tenant *HermesTenant, projectID string, environmentID string, serviceID string, volumeID string, publicURL string) error {
