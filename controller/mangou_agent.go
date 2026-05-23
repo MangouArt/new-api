@@ -1010,18 +1010,16 @@ func ensureMangouModelMeta(modelName string, spec mangouProviderChannelSpec) err
 	if err != nil {
 		return err
 	}
-	now := common.GetTimestamp()
-	return model.DB.Create(&model.Model{
+	meta := &model.Model{
 		ModelName:    modelName,
 		Description:  spec.Description,
 		Tags:         "mangou," + spec.Provider + "," + spec.TaskType,
 		VendorID:     vendorID,
 		Status:       1,
 		SyncOfficial: 0,
-		CreatedTime:  now,
-		UpdatedTime:  now,
 		NameRule:     model.NameRuleExact,
-	}).Error
+	}
+	return meta.Insert()
 }
 
 func ensureMangouVendor(provider string) (int, error) {
