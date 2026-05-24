@@ -14,6 +14,26 @@ export type HermesPairingSelfData = {
   exists: boolean
 }
 
+export type HermesTenantAdminListData = {
+  page: number
+  page_size: number
+  total: number
+  items: HermesTenantUser[]
+}
+
+export type HermesTenantUser = {
+  user_id: number
+  username: string
+  display_name?: string
+  email?: string
+  role: number
+  status: number
+  group?: string
+  created_at?: number
+  tenant: HermesTenant | null
+  latest_pairing: HermesPairingSession | null
+}
+
 export type HermesTenant = {
   id: number
   user_id: number

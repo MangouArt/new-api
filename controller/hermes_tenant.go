@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -31,6 +33,8 @@ type hermesPairingURLRequest struct {
 	CommandExitCode      int    `json:"command_exit_code"`
 	CommandOutputSummary string `json:"command_output_summary"`
 }
+
+var deployHermesTenantOnZeabur = service.DeployHermesTenantOnZeabur
 
 func GetHermesTenantSelf(c *gin.Context) {
 	tenant, err := model.GetHermesTenantByUserID(c.GetInt("id"))
@@ -191,6 +195,18 @@ func AdminGetHermesTenantByUser(c *gin.Context) {
 	})
 }
 
+func AdminListHermesTenantUsers(c *gin.Context) {
+	pageInfo := common.GetPageQuery(c)
+	items, total, err := model.ListHermesTenantUsers(pageInfo)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	pageInfo.SetTotal(int(total))
+	pageInfo.SetItems(items)
+	common.ApiSuccess(c, pageInfo)
+}
+
 func AdminEnsureHermesTenantByUser(c *gin.Context) {
 	userID, err := strconv.Atoi(c.Param("user_id"))
 	if err != nil {
@@ -225,6 +241,51 @@ func AdminEnsureHermesTenantByUser(c *gin.Context) {
 		"tenant_token_created":       tokenCreated,
 		"hermes_admin_token":         adminToken,
 		"hermes_admin_token_created": adminTokenCreated,
+	})
+}
+
+func AdminDeployHermesTenantByUser(c *gin.Context) {
+	userID, err := strconv.Atoi(c.Param("user_id"))
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	tenant, created, err := model.EnsureHermesTenantForUser(userID)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	token, tokenCreated, err := model.EnsureHermesTenantRuntimeToken(tenant)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	adminToken, adminTokenCreated, err := model.EnsureHermesTenantAdminToken(tenant)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	result, err := deployHermesTenantOnZeabur(context.WithoutCancel(c.Request.Context()), service.HermesTenantZeaburDeployRequest{
+		Tenant:        tenant,
+		TenantToken:   token.GetFullKey(),
+		AdminToken:    adminToken,
+		NewAPIBaseURL: hermesNewAPIBaseURL(c),
+	})
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if err := model.MarkHermesTenantDeploying(tenant, result.ProjectID, result.EnvironmentID, result.DeploymentID); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{
+		"tenant":                     tenant,
+		"created":                    created,
+		"tenant_token_id":            token.Id,
+		"tenant_token_created":       tokenCreated,
+		"hermes_admin_token_created": adminTokenCreated,
+		"zeabur":                     result,
 	})
 }
 
@@ -263,6 +324,21 @@ func AdminUpdateHermesTenantProvisioning(c *gin.Context) {
 	common.ApiSuccess(c, gin.H{
 		"tenant": tenant,
 	})
+}
+
+func hermesNewAPIBaseURL(c *gin.Context) string {
+	if configured := strings.TrimSpace(service.HermesNewAPIBaseURL()); configured != "" {
+		return configured
+	}
+	scheme := "https"
+	if c.Request.TLS != nil {
+		scheme = "https"
+	} else if forwardedProto := strings.TrimSpace(c.GetHeader("X-Forwarded-Proto")); forwardedProto != "" {
+		scheme = strings.Split(forwardedProto, ",")[0]
+	} else if c.Request.URL.Scheme != "" {
+		scheme = c.Request.URL.Scheme
+	}
+	return scheme + "://" + c.Request.Host
 }
 
 func AdminCreateHermesPairingSessionByUser(c *gin.Context) {

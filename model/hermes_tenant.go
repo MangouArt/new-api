@@ -47,6 +47,7 @@ type HermesTenant struct {
 	ZeaburProjectID     string             `json:"zeabur_project_id" gorm:"type:varchar(128)"`
 	ZeaburEnvironmentID string             `json:"zeabur_environment_id" gorm:"type:varchar(128)"`
 	ZeaburServiceID     string             `json:"zeabur_service_id" gorm:"type:varchar(128);index"`
+	ZeaburDeploymentID  string             `json:"zeabur_deployment_id" gorm:"type:varchar(128);index"`
 	ZeaburVolumeID      string             `json:"zeabur_volume_id" gorm:"type:varchar(128)"`
 	PublicURL           string             `json:"public_url" gorm:"type:varchar(512)"`
 	DashboardURL        string             `json:"dashboard_url" gorm:"type:varchar(512)"`
@@ -68,6 +69,19 @@ type HermesPairingSession struct {
 	CreatedAt            int64                      `json:"created_at" gorm:"autoCreateTime"`
 	UpdatedAt            int64                      `json:"updated_at" gorm:"autoUpdateTime"`
 	CompletedAt          int64                      `json:"completed_at"`
+}
+
+type HermesTenantUser struct {
+	UserID        int                   `json:"user_id"`
+	Username      string                `json:"username"`
+	DisplayName   string                `json:"display_name"`
+	Email         string                `json:"email"`
+	Role          int                   `json:"role"`
+	Status        int                   `json:"status"`
+	Group         string                `json:"group"`
+	CreatedAt     int64                 `json:"created_at"`
+	Tenant        *HermesTenant         `json:"tenant"`
+	LatestPairing *HermesPairingSession `json:"latest_pairing"`
 }
 
 func BuildHermesTenantID(userID int) string {
@@ -107,6 +121,76 @@ func GetHermesTenantByUserID(userID int) (*HermesTenant, error) {
 		return nil, err
 	}
 	return &tenant, nil
+}
+
+func ListHermesTenantUsers(pageInfo *common.PageInfo) ([]*HermesTenantUser, int64, error) {
+	var total int64
+	if err := DB.Unscoped().Model(&User{}).Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	var users []*User
+	if err := DB.Unscoped().
+		Order("id desc").
+		Limit(pageInfo.GetPageSize()).
+		Offset(pageInfo.GetStartIdx()).
+		Omit("password", "original_password", "access_token", "verification_code").
+		Find(&users).Error; err != nil {
+		return nil, 0, err
+	}
+
+	userIDs := make([]int, 0, len(users))
+	for _, user := range users {
+		userIDs = append(userIDs, user.Id)
+	}
+
+	tenantsByUserID := map[int]*HermesTenant{}
+	pairingsByTenantID := map[int]*HermesPairingSession{}
+	if len(userIDs) > 0 {
+		var tenants []*HermesTenant
+		if err := DB.Where("user_id IN ?", userIDs).Find(&tenants).Error; err != nil {
+			return nil, 0, err
+		}
+		tenantIDs := make([]int, 0, len(tenants))
+		for _, tenant := range tenants {
+			tenantsByUserID[tenant.UserID] = tenant
+			tenantIDs = append(tenantIDs, tenant.ID)
+		}
+		if len(tenantIDs) > 0 {
+			var sessions []*HermesPairingSession
+			if err := DB.
+				Where("tenant_id IN ?", tenantIDs).
+				Order("tenant_id asc, id desc").
+				Find(&sessions).Error; err != nil {
+				return nil, 0, err
+			}
+			for _, session := range sessions {
+				if _, ok := pairingsByTenantID[session.TenantID]; !ok {
+					pairingsByTenantID[session.TenantID] = session
+				}
+			}
+		}
+	}
+
+	items := make([]*HermesTenantUser, 0, len(users))
+	for _, user := range users {
+		item := &HermesTenantUser{
+			UserID:      user.Id,
+			Username:    user.Username,
+			DisplayName: user.DisplayName,
+			Email:       user.Email,
+			Role:        user.Role,
+			Status:      user.Status,
+			Group:       user.Group,
+			CreatedAt:   user.CreatedAt,
+			Tenant:      tenantsByUserID[user.Id],
+		}
+		if item.Tenant != nil {
+			item.LatestPairing = pairingsByTenantID[item.Tenant.ID]
+		}
+		items = append(items, item)
+	}
+	return items, total, nil
 }
 
 func EnsureHermesTenantForUser(userID int) (*HermesTenant, bool, error) {
@@ -262,6 +346,26 @@ func UpdateHermesTenantProvisioning(tenant *HermesTenant, projectID string, envi
 		updates["dashboard_url"] = publicURL
 	}
 	return DB.Model(tenant).Updates(updates).Error
+}
+
+func MarkHermesTenantDeploying(tenant *HermesTenant, projectID string, environmentID string, deploymentID string) error {
+	if tenant == nil || tenant.ID == 0 {
+		return errors.New("invalid hermes tenant")
+	}
+	updates := map[string]any{
+		"zeabur_project_id":     projectID,
+		"zeabur_environment_id": environmentID,
+		"zeabur_deployment_id":  deploymentID,
+		"status":                HermesTenantStatusDeploying,
+	}
+	if err := DB.Model(tenant).Updates(updates).Error; err != nil {
+		return err
+	}
+	tenant.ZeaburProjectID = projectID
+	tenant.ZeaburEnvironmentID = environmentID
+	tenant.ZeaburDeploymentID = deploymentID
+	tenant.Status = HermesTenantStatusDeploying
+	return nil
 }
 
 func CreateHermesPairingSession(tenant *HermesTenant, expiresAt int64) (*HermesPairingSession, error) {

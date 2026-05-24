@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/require"
@@ -98,6 +100,50 @@ func TestAdminEnsureHermesTenantByUserReusesProvisioningSecrets(t *testing.T) {
 	require.Equal(t, firstData["hermes_admin_token"], secondData["hermes_admin_token"])
 }
 
+func TestAdminDeployHermesTenantByUserCallsZeaburProvisioner(t *testing.T) {
+	setupHermesTenantControllerTestDB(t)
+
+	original := deployHermesTenantOnZeabur
+	t.Cleanup(func() {
+		deployHermesTenantOnZeabur = original
+	})
+	var sawRequest service.HermesTenantZeaburDeployRequest
+	deployHermesTenantOnZeabur = func(_ context.Context, req service.HermesTenantZeaburDeployRequest) (*service.HermesTenantZeaburDeployResult, error) {
+		sawRequest = req
+		return &service.HermesTenantZeaburDeployResult{
+			ProjectID:     "project-id",
+			EnvironmentID: "env-id",
+			DeploymentID:  "deployment-id",
+			ServiceName:   req.Tenant.ServiceName,
+			VolumeName:    req.Tenant.VolumeName,
+		}, nil
+	}
+
+	ctx, recorder := newAuthenticatedContext(t, http.MethodPost, "/api/hermes/tenants/user/42/deploy", nil, 1)
+	ctx.Params = gin.Params{{Key: "user_id", Value: "42"}}
+	ctx.Request.Host = "mangou-newapi.example.test"
+	ctx.Request.Header.Set("X-Forwarded-Proto", "https")
+
+	AdminDeployHermesTenantByUser(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	resp := decodeAPIResponse(t, recorder)
+	require.True(t, resp.Success)
+	require.Equal(t, 42, sawRequest.Tenant.UserID)
+	require.Equal(t, "https://mangou-newapi.example.test", sawRequest.NewAPIBaseURL)
+	require.NotEmpty(t, sawRequest.TenantToken)
+	require.NotEmpty(t, sawRequest.AdminToken)
+	require.NotContains(t, recorder.Body.String(), sawRequest.TenantToken)
+	require.NotContains(t, recorder.Body.String(), sawRequest.AdminToken)
+
+	var data map[string]any
+	require.NoError(t, common.Unmarshal(resp.Data, &data))
+	tenant := data["tenant"].(map[string]any)
+	require.Equal(t, "deploying", tenant["status"])
+	require.Equal(t, "project-id", tenant["zeabur_project_id"])
+	require.Equal(t, "deployment-id", tenant["zeabur_deployment_id"])
+}
+
 func TestGetHermesTenantSelfDoesNotLeakAdminToken(t *testing.T) {
 	setupHermesTenantControllerTestDB(t)
 
@@ -112,6 +158,47 @@ func TestGetHermesTenantSelfDoesNotLeakAdminToken(t *testing.T) {
 	resp := decodeAPIResponse(t, recorder)
 	require.True(t, resp.Success)
 	require.NotContains(t, recorder.Body.String(), "hermes_admin_token")
+}
+
+func TestAdminListHermesTenantUsersShowsAllUsersWithoutSecrets(t *testing.T) {
+	db := setupHermesTenantControllerTestDB(t)
+	require.NoError(t, db.Create(&model.User{Id: 1, Username: "mangou", DisplayName: "Mangou", Email: "root@example.com", Role: common.RoleRootUser, Status: common.UserStatusEnabled, AffCode: "root-aff"}).Error)
+	require.NoError(t, db.Create(&model.User{Id: 42, Username: "customer", DisplayName: "Customer", Email: "customer@example.com", Role: common.RoleCommonUser, Status: common.UserStatusEnabled, AffCode: "customer-aff"}).Error)
+
+	tenant, _, err := model.EnsureHermesTenantForUser(42)
+	require.NoError(t, err)
+	_, _, err = model.EnsureHermesTenantAdminToken(tenant)
+	require.NoError(t, err)
+	session, err := model.CreateHermesPairingSession(tenant, 12345)
+	require.NoError(t, err)
+	require.NoError(t, model.RecordHermesPairingURL(tenant, session, "https://open.feishu.cn/pair?state=abc", 0, "url generated"))
+
+	ctx, recorder := newAuthenticatedContext(t, http.MethodGet, "/api/hermes/tenants?p=1&page_size=20", nil, 1)
+	AdminListHermesTenantUsers(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	resp := decodeAPIResponse(t, recorder)
+	require.True(t, resp.Success)
+	require.NotContains(t, recorder.Body.String(), "hermes_admin_token")
+
+	var page map[string]any
+	require.NoError(t, common.Unmarshal(resp.Data, &page))
+	require.Equal(t, float64(2), page["total"])
+	items := page["items"].([]any)
+	require.Len(t, items, 2)
+
+	customer := items[0].(map[string]any)
+	require.Equal(t, float64(42), customer["user_id"])
+	require.Equal(t, "customer", customer["username"])
+	require.NotNil(t, customer["tenant"])
+	tenantData := customer["tenant"].(map[string]any)
+	require.Equal(t, "hermes-user-42", tenantData["service_name"])
+	latestPairing := customer["latest_pairing"].(map[string]any)
+	require.Equal(t, "url_generated", latestPairing["status"])
+
+	root := items[1].(map[string]any)
+	require.Equal(t, float64(1), root["user_id"])
+	require.Nil(t, root["tenant"])
 }
 
 func TestProxyHermesTenantDashboardForwardsThroughNewAPI(t *testing.T) {
