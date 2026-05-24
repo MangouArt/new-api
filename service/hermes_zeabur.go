@@ -9,14 +9,13 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/model"
 )
 
-const zeaburGraphQLEndpoint = "https://api.zeabur.com/graphql"
+var zeaburGraphQLEndpoint = "https://api.zeabur.com/graphql"
 
 type HermesTenantZeaburDeployRequest struct {
 	Tenant        *model.HermesTenant
@@ -97,22 +96,12 @@ func DeployHermesTenantOnZeabur(ctx context.Context, req HermesTenantZeaburDeplo
 	}
 
 	variables := map[string]any{
-		"input": map[string]any{
-			"projectID": projectID,
-			"template":  renderHermesTenantTemplate(req.Tenant, newAPIBaseURL, req.TenantToken, req.AdminToken),
-			"variables": map[string]string{
-				"NEWAPI_USER_ID":      strconv.Itoa(req.Tenant.UserID),
-				"NEWAPI_BASE_URL":     newAPIBaseURL,
-				"NEWAPI_TENANT_TOKEN": req.TenantToken,
-				"HERMES_ADMIN_TOKEN":  req.AdminToken,
-			},
-		},
+		"projectId":   projectID,
+		"rawSpecYaml": renderHermesTenantTemplate(req.Tenant, newAPIBaseURL, req.TenantToken, req.AdminToken),
 	}
-	if environmentID != "" {
-		variables["input"].(map[string]any)["environmentID"] = environmentID
-	}
-	body, err := postZeaburGraphQL(ctx, apiToken, `mutation DeployHermesTenant($input: DeployTemplateInput!) {
-  deployTemplate(input: $input) {
+
+	body, err := postZeaburGraphQL(ctx, apiToken, `mutation DeployHermesTenant($rawSpecYaml: String!, $projectId: ObjectID!) {
+  deployTemplate(rawSpecYaml: $rawSpecYaml, projectID: $projectId) {
     _id
   }
 }`, variables)
