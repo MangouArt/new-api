@@ -279,6 +279,7 @@ func SetApiRouter(router *gin.Engine) {
 			hermesAdminRoute.Use(middleware.AdminAuth())
 			{
 				hermesAdminRoute.GET("", controller.AdminListHermesTenantUsers)
+				hermesAdminRoute.GET("/provisioning/config", controller.AdminGetHermesProvisioningConfig)
 				hermesAdminRoute.GET("/user/:user_id", controller.AdminGetHermesTenantByUser)
 				hermesAdminRoute.POST("/user/:user_id", controller.AdminEnsureHermesTenantByUser)
 				hermesAdminRoute.POST("/user/:user_id/deploy", controller.AdminDeployHermesTenantByUser)

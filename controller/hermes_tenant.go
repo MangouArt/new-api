@@ -207,6 +207,10 @@ func AdminListHermesTenantUsers(c *gin.Context) {
 	common.ApiSuccess(c, pageInfo)
 }
 
+func AdminGetHermesProvisioningConfig(c *gin.Context) {
+	common.ApiSuccess(c, service.HermesZeaburConfig())
+}
+
 func AdminEnsureHermesTenantByUser(c *gin.Context) {
 	userID, err := strconv.Atoi(c.Param("user_id"))
 	if err != nil {

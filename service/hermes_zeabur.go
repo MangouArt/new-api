@@ -33,6 +33,11 @@ type HermesTenantZeaburDeployResult struct {
 	VolumeName    string `json:"volume_name"`
 }
 
+type HermesZeaburConfigStatus struct {
+	Configured bool     `json:"configured"`
+	Missing    []string `json:"missing"`
+}
+
 type zeaburGraphQLResponse struct {
 	Data   json.RawMessage `json:"data"`
 	Errors []struct {
@@ -48,6 +53,20 @@ type zeaburDeployTemplateData struct {
 
 func HermesNewAPIBaseURL() string {
 	return strings.TrimRight(strings.TrimSpace(os.Getenv("HERMES_NEWAPI_BASE_URL")), "/")
+}
+
+func HermesZeaburConfig() HermesZeaburConfigStatus {
+	missing := make([]string, 0)
+	if strings.TrimSpace(os.Getenv("ZEABUR_API_TOKEN")) == "" {
+		missing = append(missing, "ZEABUR_API_TOKEN")
+	}
+	if strings.TrimSpace(os.Getenv("HERMES_ZEABUR_PROJECT_ID")) == "" && strings.TrimSpace(os.Getenv("ZEABUR_PROJECT_ID")) == "" {
+		missing = append(missing, "HERMES_ZEABUR_PROJECT_ID")
+	}
+	return HermesZeaburConfigStatus{
+		Configured: len(missing) == 0,
+		Missing:    missing,
+	}
 }
 
 func DeployHermesTenantOnZeabur(ctx context.Context, req HermesTenantZeaburDeployRequest) (*HermesTenantZeaburDeployResult, error) {

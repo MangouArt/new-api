@@ -144,6 +144,24 @@ func TestAdminDeployHermesTenantByUserCallsZeaburProvisioner(t *testing.T) {
 	require.Equal(t, "deployment-id", tenant["zeabur_deployment_id"])
 }
 
+func TestAdminGetHermesProvisioningConfigDoesNotLeakSecrets(t *testing.T) {
+	t.Setenv("ZEABUR_API_TOKEN", "secret-token")
+	t.Setenv("HERMES_ZEABUR_PROJECT_ID", "project-id")
+
+	ctx, recorder := newAuthenticatedContext(t, http.MethodGet, "/api/hermes/tenants/provisioning/config", nil, 1)
+	AdminGetHermesProvisioningConfig(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	resp := decodeAPIResponse(t, recorder)
+	require.True(t, resp.Success)
+	require.NotContains(t, recorder.Body.String(), "secret-token")
+
+	var data map[string]any
+	require.NoError(t, common.Unmarshal(resp.Data, &data))
+	require.Equal(t, true, data["configured"])
+	require.Empty(t, data["missing"])
+}
+
 func TestGetHermesTenantSelfDoesNotLeakAdminToken(t *testing.T) {
 	setupHermesTenantControllerTestDB(t)
 
