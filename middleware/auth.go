@@ -95,12 +95,15 @@ func authHelper(c *gin.Context, minRole int) {
 	// get header New-Api-User
 	apiUserIdStr := c.Request.Header.Get("New-Api-User")
 	if apiUserIdStr == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"success": false,
-			"message": common.TranslateMessage(c, i18n.MsgAuthUserIdNotProvided),
-		})
-		c.Abort()
-		return
+		if useAccessToken {
+			c.JSON(http.StatusUnauthorized, gin.H{
+				"success": false,
+				"message": common.TranslateMessage(c, i18n.MsgAuthUserIdNotProvided),
+			})
+			c.Abort()
+			return
+		}
+		apiUserIdStr = fmt.Sprintf("%v", id)
 	}
 	apiUserId, err := strconv.Atoi(apiUserIdStr)
 	if err != nil {
