@@ -47,6 +47,7 @@ const routerMap = {
   task: '/console/task',
   models: '/console/models',
   deployment: '/console/deployment',
+  hermes: '/console/hermes',
   playground: '/console/playground',
   personal: '/console/personal',
 };
@@ -169,6 +170,12 @@ const SiderBar = ({ onNavigate = () => {} }) => {
         text: t('模型部署'),
         itemKey: 'deployment',
         to: '/deployment',
+        className: isAdmin() ? '' : 'tableHiddle',
+      },
+      {
+        text: t('Hermes Agent'),
+        itemKey: 'hermes',
+        to: '/console/hermes',
         className: isAdmin() ? '' : 'tableHiddle',
       },
       {

@@ -52,24 +52,16 @@ type themeAwareFileSystem struct {
 
 func (t *themeAwareFileSystem) Exists(prefix string, path string) bool {
 	if GetTheme() == "classic" {
-		return t.classicFS.Exists(prefix, path) || t.defaultFS.Exists(prefix, path)
+		return t.classicFS.Exists(prefix, path)
 	}
-	return t.defaultFS.Exists(prefix, path) || t.classicFS.Exists(prefix, path)
+	return t.defaultFS.Exists(prefix, path)
 }
 
 func (t *themeAwareFileSystem) Open(name string) (http.File, error) {
 	if GetTheme() == "classic" {
-		file, err := t.classicFS.Open(name)
-		if err == nil {
-			return file, nil
-		}
-		return t.defaultFS.Open(name)
+		return t.classicFS.Open(name)
 	}
-	file, err := t.defaultFS.Open(name)
-	if err == nil {
-		return file, nil
-	}
-	return t.classicFS.Open(name)
+	return t.defaultFS.Open(name)
 }
 
 func NewThemeAwareFS(defaultFS, classicFS static.ServeFileSystem) static.ServeFileSystem {
