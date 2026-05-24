@@ -223,10 +223,14 @@ func TestProxyHermesTenantDashboardForwardsThroughNewAPI(t *testing.T) {
 	setupHermesTenantControllerTestDB(t)
 
 	var sawAdminToken string
+	var sawNewAPIUser string
+	var sawForwardedPrefix string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, "/dashboard/page", r.URL.Path)
 		require.Equal(t, "1", r.URL.Query().Get("tab"))
 		sawAdminToken = r.Header.Get("X-Hermes-Admin-Token")
+		sawNewAPIUser = r.Header.Get("New-Api-User")
+		sawForwardedPrefix = r.Header.Get("X-Forwarded-Prefix")
 		w.Header().Set("Content-Type", "text/plain")
 		_, _ = w.Write([]byte("dashboard ok"))
 	}))
@@ -245,6 +249,63 @@ func TestProxyHermesTenantDashboardForwardsThroughNewAPI(t *testing.T) {
 	require.Equal(t, http.StatusOK, recorder.Code)
 	require.Equal(t, "dashboard ok", recorder.Body.String())
 	require.Equal(t, adminToken, sawAdminToken)
+	require.Equal(t, "42", sawNewAPIUser)
+	require.Equal(t, "/api/hermes/tenant/dashboard", sawForwardedPrefix)
+}
+
+func TestAdminProxyHermesTenantDashboardForwardsSelectedUser(t *testing.T) {
+	setupHermesTenantControllerTestDB(t)
+
+	var sawNewAPIUser string
+	var sawForwardedPrefix string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/tenant-dashboard/", r.URL.Path)
+		sawNewAPIUser = r.Header.Get("New-Api-User")
+		sawForwardedPrefix = r.Header.Get("X-Forwarded-Prefix")
+		_, _ = w.Write([]byte("admin dashboard ok"))
+	}))
+	t.Cleanup(server.Close)
+
+	tenant, _, err := model.EnsureHermesTenantForUser(42)
+	require.NoError(t, err)
+	_, _, err = model.EnsureHermesTenantAdminToken(tenant)
+	require.NoError(t, err)
+	require.NoError(t, model.UpdateHermesTenantProvisioning(tenant, "project", "env", "service", "volume", server.URL+"/tenant-dashboard"))
+
+	ctx, recorder := newAuthenticatedContext(t, http.MethodGet, "/api/hermes/tenants/user/42/dashboard/", nil, 1)
+	ctx.Params = gin.Params{
+		{Key: "user_id", Value: "42"},
+		{Key: "proxy_path", Value: "/"},
+	}
+	AdminProxyHermesTenantDashboardByUser(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Equal(t, "admin dashboard ok", recorder.Body.String())
+	require.Equal(t, "42", sawNewAPIUser)
+	require.Equal(t, "/api/hermes/tenants/user/42/dashboard", sawForwardedPrefix)
+}
+
+func TestProxyHermesTenantDashboardBlocksRuntimeAdminPaths(t *testing.T) {
+	setupHermesTenantControllerTestDB(t)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("dashboard proxy should not forward runtime admin paths")
+	}))
+	t.Cleanup(server.Close)
+
+	tenant, _, err := model.EnsureHermesTenantForUser(42)
+	require.NoError(t, err)
+	_, _, err = model.EnsureHermesTenantAdminToken(tenant)
+	require.NoError(t, err)
+	require.NoError(t, model.UpdateHermesTenantProvisioning(tenant, "project", "env", "service", "volume", server.URL+"/dashboard"))
+
+	ctx, recorder := newAuthenticatedContext(t, http.MethodPost, "/api/hermes/tenant/dashboard/admin/feishu/pair", nil, 42)
+	ctx.Params = gin.Params{{Key: "proxy_path", Value: "/admin/feishu/pair"}}
+	ProxyHermesTenantDashboard(ctx)
+
+	resp := decodeAPIResponse(t, recorder)
+	require.False(t, resp.Success)
+	require.Contains(t, resp.Message, "runtime admin path")
 }
 
 func TestHermesPairingSessionControlPlaneStoresURL(t *testing.T) {
@@ -293,6 +354,43 @@ func TestHermesPairingSessionControlPlaneStoresURL(t *testing.T) {
 	tenant, err := model.GetHermesTenantByUserID(42)
 	require.NoError(t, err)
 	require.Equal(t, model.HermesTenantStatusPairingURLGenerated, tenant.Status)
+}
+
+func TestStartHermesTenantPairingCallsRuntimeAndStoresURL(t *testing.T) {
+	setupHermesTenantControllerTestDB(t)
+
+	var sawAdminToken string
+	var sawNewAPIUser string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/runtime/admin/feishu/pair", r.URL.Path)
+		require.Equal(t, http.MethodPost, r.Method)
+		sawAdminToken = r.Header.Get("X-Hermes-Admin-Token")
+		sawNewAPIUser = r.Header.Get("New-Api-User")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"pairing_url":"https://open.feishu.cn/pair?state=abc","expire_in":600}`))
+	}))
+	t.Cleanup(server.Close)
+
+	tenant, _, err := model.EnsureHermesTenantForUser(42)
+	require.NoError(t, err)
+	adminToken, _, err := model.EnsureHermesTenantAdminToken(tenant)
+	require.NoError(t, err)
+	require.NoError(t, model.UpdateHermesTenantProvisioning(tenant, "project", "env", "service", "volume", server.URL+"/runtime"))
+
+	ctx, recorder := newAuthenticatedContext(t, http.MethodPost, "/api/hermes/tenant/pairing/start", nil, 42)
+	StartHermesTenantPairingSelf(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Equal(t, adminToken, sawAdminToken)
+	require.Equal(t, "42", sawNewAPIUser)
+
+	resp := decodeAPIResponse(t, recorder)
+	require.True(t, resp.Success)
+	var data map[string]any
+	require.NoError(t, common.Unmarshal(resp.Data, &data))
+	session := data["session"].(map[string]any)
+	require.Equal(t, "url_generated", session["status"])
+	require.Equal(t, "https://open.feishu.cn/pair?state=abc", session["pairing_url"])
 }
 
 func TestAdminRecordHermesPairingURLRejectsInvalidURL(t *testing.T) {

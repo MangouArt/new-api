@@ -272,6 +272,7 @@ func SetApiRouter(router *gin.Engine) {
 				hermesSelfRoute.GET("/self", controller.GetHermesTenantSelf)
 				hermesSelfRoute.POST("/self", controller.EnsureHermesTenantSelf)
 				hermesSelfRoute.GET("/pairing/latest", controller.GetHermesTenantPairingSelf)
+				hermesSelfRoute.POST("/pairing/start", controller.StartHermesTenantPairingSelf)
 				hermesSelfRoute.Any("/dashboard/*proxy_path", controller.ProxyHermesTenantDashboard)
 			}
 
@@ -283,7 +284,9 @@ func SetApiRouter(router *gin.Engine) {
 				hermesAdminRoute.GET("/user/:user_id", controller.AdminGetHermesTenantByUser)
 				hermesAdminRoute.POST("/user/:user_id", controller.AdminEnsureHermesTenantByUser)
 				hermesAdminRoute.POST("/user/:user_id/deploy", controller.AdminDeployHermesTenantByUser)
+				hermesAdminRoute.Any("/user/:user_id/dashboard/*proxy_path", controller.AdminProxyHermesTenantDashboardByUser)
 				hermesAdminRoute.PUT("/user/:user_id/provisioning", controller.AdminUpdateHermesTenantProvisioning)
+				hermesAdminRoute.POST("/user/:user_id/pairing/start", controller.AdminStartHermesPairingByUser)
 				hermesAdminRoute.POST("/user/:user_id/pairing-sessions", controller.AdminCreateHermesPairingSessionByUser)
 				hermesAdminRoute.PUT("/user/:user_id/pairing-sessions/:session_id/url", controller.AdminRecordHermesPairingURLByUser)
 			}

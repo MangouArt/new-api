@@ -26,6 +26,8 @@ import {
   getHermesTenantAdminList,
   getHermesTenantSelf,
   getLatestHermesPairingSession,
+  startHermesTenantPairing,
+  startHermesTenantPairingForUser,
 } from './api'
 import type {
   HermesPairingSession,
@@ -64,6 +66,7 @@ export function Hermes() {
     null
   )
   const [deployingUserID, setDeployingUserID] = useState<number | null>(null)
+  const [pairingUserID, setPairingUserID] = useState<number | null>(null)
   const [loading, setLoading] = useState(true)
 
   async function reload() {
@@ -89,6 +92,26 @@ export function Hermes() {
       await reload()
     } finally {
       setDeployingUserID(null)
+    }
+  }
+
+  async function pairCurrentUser() {
+    setPairingUserID(tenant?.user_id || 0)
+    try {
+      await startHermesTenantPairing()
+      await reload()
+    } finally {
+      setPairingUserID(null)
+    }
+  }
+
+  async function pairForUser(userID: number) {
+    setPairingUserID(userID)
+    try {
+      await startHermesTenantPairingForUser(userID)
+      await reload()
+    } finally {
+      setPairingUserID(null)
     }
   }
 
@@ -120,7 +143,10 @@ export function Hermes() {
   }, [])
 
   const dashboardUrl = '/api/hermes/tenant/dashboard/'
+  const adminDashboardUrl = (userID: number) =>
+    `/api/hermes/tenants/user/${userID}/dashboard/`
   const pairingUrl = pairing?.pairing_url
+  const canOpenDashboard = Boolean(tenant?.public_url || tenant?.dashboard_url)
 
   return (
     <SectionPageLayout>
@@ -203,10 +229,11 @@ export function Hermes() {
                               </div>
                             </TableCell>
                             <TableCell>
-                              {item.tenant?.public_url ? (
+                              {item.tenant?.public_url ||
+                              item.tenant?.dashboard_url ? (
                                 <Button asChild variant='outline' size='sm'>
                                   <a
-                                    href={item.tenant.public_url}
+                                    href={adminDashboardUrl(item.user_id)}
                                     target='_blank'
                                     rel='noreferrer'
                                   >
@@ -221,18 +248,33 @@ export function Hermes() {
                               )}
                             </TableCell>
                             <TableCell>
-                              <Button
-                                variant='outline'
-                                size='sm'
-                                disabled={deployingUserID === item.user_id}
-                                onClick={() => deployForUser(item.user_id)}
-                              >
-                                {deployingUserID === item.user_id
-                                  ? t('Deploying')
-                                  : item.tenant
-                                    ? t('Repair Deploy')
-                                    : t('Deploy')}
-                              </Button>
+                              <div className='flex flex-wrap gap-2'>
+                                <Button
+                                  variant='outline'
+                                  size='sm'
+                                  disabled={deployingUserID === item.user_id}
+                                  onClick={() => deployForUser(item.user_id)}
+                                >
+                                  {deployingUserID === item.user_id
+                                    ? t('Deploying')
+                                    : item.tenant
+                                      ? t('Repair Deploy')
+                                      : t('Deploy')}
+                                </Button>
+                                {item.tenant?.public_url ||
+                                item.tenant?.dashboard_url ? (
+                                  <Button
+                                    variant='outline'
+                                    size='sm'
+                                    disabled={pairingUserID === item.user_id}
+                                    onClick={() => pairForUser(item.user_id)}
+                                  >
+                                    {pairingUserID === item.user_id
+                                      ? t('Pairing')
+                                      : t('Pair Feishu')}
+                                  </Button>
+                                ) : null}
+                              </div>
                             </TableCell>
                           </TableRow>
                         ))
@@ -290,12 +332,19 @@ export function Hermes() {
                   </>
                 )}
                 <div className='flex flex-wrap gap-2 pt-2'>
-                  <Button asChild>
-                    <a href={dashboardUrl} target='_blank' rel='noreferrer'>
+                  {canOpenDashboard ? (
+                    <Button asChild>
+                      <a href={dashboardUrl} target='_blank' rel='noreferrer'>
+                        <ExternalLink className='size-4' />
+                        {t('Open Hermes Dashboard')}
+                      </a>
+                    </Button>
+                  ) : (
+                    <Button disabled>
                       <ExternalLink className='size-4' />
                       {t('Open Hermes Dashboard')}
-                    </a>
-                  </Button>
+                    </Button>
+                  )}
                   <Button
                     variant='outline'
                     onClick={() => window.location.reload()}
@@ -339,17 +388,39 @@ export function Hermes() {
                       value={pairing?.expires_at}
                     />
                     {pairingUrl ? (
-                      <Button asChild variant='outline' className='w-full'>
-                        <a href={pairingUrl} target='_blank' rel='noreferrer'>
-                          <ExternalLink className='size-4' />
-                          {t('Open Pairing URL')}
-                        </a>
-                      </Button>
+                      <div className='flex flex-col gap-2'>
+                        <Button asChild variant='outline' className='w-full'>
+                          <a href={pairingUrl} target='_blank' rel='noreferrer'>
+                            <ExternalLink className='size-4' />
+                            {t('Open Pairing URL')}
+                          </a>
+                        </Button>
+                        <Button
+                          variant='outline'
+                          className='w-full'
+                          disabled={!canOpenDashboard || pairingUserID !== null}
+                          onClick={pairCurrentUser}
+                        >
+                          {pairingUserID !== null
+                            ? t('Pairing')
+                            : t('Regenerate Pairing URL')}
+                        </Button>
+                      </div>
                     ) : (
-                      <div className='text-muted-foreground rounded-lg border border-dashed p-4 text-sm'>
-                        {t(
-                          'No active pairing URL. Run the controlled delivery pairing step to generate one.'
-                        )}
+                      <div className='space-y-3 rounded-lg border border-dashed p-4'>
+                        <div className='text-muted-foreground text-sm'>
+                          {t('No active pairing URL.')}
+                        </div>
+                        <Button
+                          variant='outline'
+                          className='w-full'
+                          disabled={!canOpenDashboard || pairingUserID !== null}
+                          onClick={pairCurrentUser}
+                        >
+                          {pairingUserID !== null
+                            ? t('Pairing')
+                            : t('Generate Pairing URL')}
+                        </Button>
                       </div>
                     )}
                   </>

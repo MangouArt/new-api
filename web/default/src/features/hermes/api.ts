@@ -36,3 +36,17 @@ export async function deployHermesTenantForUser(
   const res = await api.post(`/api/hermes/tenants/user/${userId}/deploy`)
   return res.data
 }
+
+export async function startHermesTenantPairing(): Promise<
+  HermesTenantResponse<HermesPairingSelfData>
+> {
+  const res = await api.post('/api/hermes/tenant/pairing/start')
+  return res.data
+}
+
+export async function startHermesTenantPairingForUser(
+  userId: number
+): Promise<HermesTenantResponse<HermesPairingSelfData>> {
+  const res = await api.post(`/api/hermes/tenants/user/${userId}/pairing/start`)
+  return res.data
+}

@@ -64,6 +64,7 @@ const Hermes = () => {
   const [tenantUsers, setTenantUsers] = useState(null);
   const [loading, setLoading] = useState(true);
   const [deployingUserID, setDeployingUserID] = useState(null);
+  const [pairingUserID, setPairingUserID] = useState(null);
 
   const reload = async () => {
     setLoading(true);
@@ -104,9 +105,48 @@ const Hermes = () => {
     }
   };
 
+  const pairForUser = async (userID) => {
+    setPairingUserID(userID);
+    try {
+      const res = await API.post(
+        `/api/hermes/tenants/user/${userID}/pairing/start`,
+      );
+      if (res.data?.success) {
+        showSuccess(t('飞书配对 URL 已生成'));
+        await reload();
+      } else {
+        showError(res.data?.message || t('飞书配对 URL 生成失败'));
+      }
+    } catch (error) {
+      showError(error);
+    } finally {
+      setPairingUserID(null);
+    }
+  };
+
+  const pairCurrentUser = async () => {
+    setPairingUserID(tenant?.user_id || 0);
+    try {
+      const res = await API.post('/api/hermes/tenant/pairing/start');
+      if (res.data?.success) {
+        showSuccess(t('飞书配对 URL 已生成'));
+        await reload();
+      } else {
+        showError(res.data?.message || t('飞书配对 URL 生成失败'));
+      }
+    } catch (error) {
+      showError(error);
+    } finally {
+      setPairingUserID(null);
+    }
+  };
+
   useEffect(() => {
     reload();
   }, []);
+
+  const adminDashboardUrl = (userID) =>
+    `/api/hermes/tenants/user/${userID}/dashboard/`;
 
   const columns = useMemo(
     () => [
@@ -166,11 +206,13 @@ const Hermes = () => {
         title: t('入口'),
         dataIndex: 'public_url',
         render: (_, record) =>
-          record.tenant?.public_url ? (
+          record.tenant?.public_url || record.tenant?.dashboard_url ? (
             <Button
               theme='outline'
               icon={<IconExternalOpen />}
-              onClick={() => window.open(record.tenant.public_url, '_blank')}
+              onClick={() =>
+                window.open(adminDashboardUrl(record.user_id), '_blank')
+              }
             >
               {t('打开')}
             </Button>
@@ -182,23 +224,36 @@ const Hermes = () => {
         title: t('操作'),
         dataIndex: 'operate',
         render: (_, record) => (
-          <Button
-            type='primary'
-            theme='outline'
-            loading={deployingUserID === record.user_id}
-            disabled={deployingUserID !== null}
-            onClick={() => deployForUser(record.user_id)}
-          >
-            {record.tenant ? t('修复部署') : t('部署')}
-          </Button>
+          <Space>
+            <Button
+              type='primary'
+              theme='outline'
+              loading={deployingUserID === record.user_id}
+              disabled={deployingUserID !== null}
+              onClick={() => deployForUser(record.user_id)}
+            >
+              {record.tenant ? t('修复部署') : t('部署')}
+            </Button>
+            {record.tenant?.public_url || record.tenant?.dashboard_url ? (
+              <Button
+                theme='outline'
+                loading={pairingUserID === record.user_id}
+                disabled={pairingUserID !== null}
+                onClick={() => pairForUser(record.user_id)}
+              >
+                {t('飞书配对')}
+              </Button>
+            ) : null}
+          </Space>
         ),
       },
     ],
-    [deployingUserID, t],
+    [deployingUserID, pairingUserID, t],
   );
 
   const dashboardUrl = '/api/hermes/tenant/dashboard/';
   const pairingUrl = pairing?.pairing_url;
+  const canOpenDashboard = Boolean(tenant?.public_url || tenant?.dashboard_url);
 
   return (
     <div className='mt-[60px] px-2'>
@@ -270,6 +325,7 @@ const Hermes = () => {
               <Button
                 type='primary'
                 icon={<IconExternalOpen />}
+                disabled={!canOpenDashboard}
                 onClick={() => window.open(dashboardUrl, '_blank')}
               >
                 {t('打开 Hermes Dashboard')}
@@ -297,18 +353,36 @@ const Hermes = () => {
               <DetailRow label={t('Session ID')} value={pairing?.id} />
               <DetailRow label={t('Expires At')} value={pairing?.expires_at} />
               {pairingUrl ? (
-                <Button
-                  theme='outline'
-                  icon={<IconExternalOpen />}
-                  onClick={() => window.open(pairingUrl, '_blank')}
-                >
-                  {t('打开配对 URL')}
-                </Button>
+                <>
+                  <Button
+                    theme='outline'
+                    icon={<IconExternalOpen />}
+                    onClick={() => window.open(pairingUrl, '_blank')}
+                  >
+                    {t('打开配对 URL')}
+                  </Button>
+                  <Button
+                    theme='outline'
+                    loading={pairingUserID !== null}
+                    disabled={!canOpenDashboard || pairingUserID !== null}
+                    onClick={pairCurrentUser}
+                  >
+                    {t('重新生成配对 URL')}
+                  </Button>
+                </>
               ) : (
                 <div className='rounded-lg border border-dashed border-[var(--semi-color-border)] p-4'>
-                  <Text type='tertiary'>
-                    {t('暂无有效配对 URL。请先执行受控交付配对步骤。')}
-                  </Text>
+                  <Text type='tertiary'>{t('暂无有效配对 URL。')}</Text>
+                  <div className='mt-3'>
+                    <Button
+                      theme='outline'
+                      loading={pairingUserID !== null}
+                      disabled={!canOpenDashboard || pairingUserID !== null}
+                      onClick={pairCurrentUser}
+                    >
+                      {t('生成配对 URL')}
+                    </Button>
+                  </div>
                 </div>
               )}
             </Space>
