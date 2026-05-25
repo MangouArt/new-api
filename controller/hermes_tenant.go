@@ -312,6 +312,22 @@ func AdminDeployHermesTenantByUser(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	if tenant.ZeaburDeploymentID != "" && tenant.Status != model.HermesTenantStatusDeployFailed && tenant.Status != model.HermesTenantStatusDeleted {
+		common.ApiSuccess(c, gin.H{
+			"tenant":  tenant,
+			"created": created,
+			"reused":  true,
+			"zeabur": gin.H{
+				"project_id":        tenant.ZeaburProjectID,
+				"environment_id":    tenant.ZeaburEnvironmentID,
+				"deployment_id":     tenant.ZeaburDeploymentID,
+				"service_name":      tenant.ServiceName,
+				"volume_name":       tenant.VolumeName,
+				"zeabur_service_id": tenant.ZeaburServiceID,
+			},
+		})
+		return
+	}
 	token, tokenCreated, err := model.EnsureHermesTenantRuntimeToken(tenant)
 	if err != nil {
 		common.ApiError(c, err)

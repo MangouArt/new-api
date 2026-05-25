@@ -144,6 +144,37 @@ func TestAdminDeployHermesTenantByUserCallsZeaburProvisioner(t *testing.T) {
 	require.Equal(t, "deployment-id", tenant["zeabur_deployment_id"])
 }
 
+func TestAdminDeployHermesTenantByUserReusesExistingDeployment(t *testing.T) {
+	setupHermesTenantControllerTestDB(t)
+
+	tenant, _, err := model.EnsureHermesTenantForUser(42)
+	require.NoError(t, err)
+	require.NoError(t, model.MarkHermesTenantDeploying(tenant, "project-id", "env-id", "deployment-id"))
+
+	original := deployHermesTenantOnZeabur
+	t.Cleanup(func() {
+		deployHermesTenantOnZeabur = original
+	})
+	deployHermesTenantOnZeabur = func(_ context.Context, _ service.HermesTenantZeaburDeployRequest) (*service.HermesTenantZeaburDeployResult, error) {
+		require.FailNow(t, "existing Hermes deployment should be reused")
+		return nil, nil
+	}
+
+	ctx, recorder := newAuthenticatedContext(t, http.MethodPost, "/api/hermes/tenants/user/42/deploy", nil, 1)
+	ctx.Params = gin.Params{{Key: "user_id", Value: "42"}}
+
+	AdminDeployHermesTenantByUser(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	resp := decodeAPIResponse(t, recorder)
+	require.True(t, resp.Success)
+	var data map[string]any
+	require.NoError(t, common.Unmarshal(resp.Data, &data))
+	require.Equal(t, true, data["reused"])
+	tenantData := data["tenant"].(map[string]any)
+	require.Equal(t, "deployment-id", tenantData["zeabur_deployment_id"])
+}
+
 func TestAdminGetHermesProvisioningConfigDoesNotLeakSecrets(t *testing.T) {
 	t.Setenv("ZEABUR_API_TOKEN", "secret-token")
 	t.Setenv("HERMES_ZEABUR_PROJECT_ID", "project-id")
