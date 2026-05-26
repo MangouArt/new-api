@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/model"
@@ -12,15 +13,24 @@ import (
 )
 
 func TestDeployHermesTenantOnZeaburUsesRawTemplateMutation(t *testing.T) {
-	var payload struct {
+	var payloads []struct {
 		Query     string         `json:"query"`
 		Variables map[string]any `json:"variables"`
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, "Bearer test-zeabur-token", r.Header.Get("Authorization"))
+		var payload struct {
+			Query     string         `json:"query"`
+			Variables map[string]any `json:"variables"`
+		}
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+		payloads = append(payloads, payload)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":{"deployTemplate":{"_id":"deployment-id"}}}`))
+		if strings.Contains(payload.Query, "deployTemplate") {
+			_, _ = w.Write([]byte(`{"data":{"deployTemplate":{"_id":"project-id"}}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":{"services":{"edges":[{"node":{"_id":"service-id","name":"hermes-user-42"}}]}}}`))
 	}))
 	defer server.Close()
 
@@ -47,15 +57,20 @@ func TestDeployHermesTenantOnZeaburUsesRawTemplateMutation(t *testing.T) {
 	})
 
 	require.NoError(t, err)
-	require.Equal(t, "deployment-id", result.DeploymentID)
-	require.Contains(t, payload.Query, "deployTemplate(rawSpecYaml: $rawSpecYaml, projectID: $projectId)")
-	require.NotContains(t, payload.Query, "DeployTemplateInput")
-	require.Equal(t, "project-id", payload.Variables["projectId"])
-	rawSpecYaml, ok := payload.Variables["rawSpecYaml"].(string)
+	require.Equal(t, "project-id", result.ProjectID)
+	require.Equal(t, "service-id", result.ServiceID)
+	require.Empty(t, result.DeploymentID)
+	require.Len(t, payloads, 2)
+	require.Contains(t, payloads[0].Query, "deployTemplate(rawSpecYaml: $rawSpecYaml, projectID: $projectID)")
+	require.NotContains(t, payloads[0].Query, "DeployTemplateInput")
+	require.Equal(t, "project-id", payloads[0].Variables["projectID"])
+	rawSpecYaml, ok := payloads[0].Variables["rawSpecYaml"].(string)
 	require.True(t, ok)
 	require.Contains(t, rawSpecYaml, "name: hermes-user-42")
 	require.Contains(t, rawSpecYaml, "NEWAPI_USER_ID:")
 	require.Contains(t, rawSpecYaml, "default: 42")
 	require.Contains(t, rawSpecYaml, "default: tenant-token")
 	require.Contains(t, rawSpecYaml, "default: admin-token")
+	require.Contains(t, payloads[1].Query, "services(projectID: $projectID")
+	require.Equal(t, "project-id", payloads[1].Variables["projectID"])
 }

@@ -28,6 +28,7 @@ type HermesTenantZeaburDeployResult struct {
 	ProjectID     string `json:"project_id"`
 	EnvironmentID string `json:"environment_id,omitempty"`
 	DeploymentID  string `json:"deployment_id"`
+	ServiceID     string `json:"zeabur_service_id,omitempty"`
 	ServiceName   string `json:"service_name"`
 	VolumeName    string `json:"volume_name"`
 }
@@ -48,6 +49,17 @@ type zeaburDeployTemplateData struct {
 	DeployTemplate struct {
 		ID string `json:"_id"`
 	} `json:"deployTemplate"`
+}
+
+type zeaburServicesData struct {
+	Services struct {
+		Edges []struct {
+			Node struct {
+				ID   string `json:"_id"`
+				Name string `json:"name"`
+			} `json:"node"`
+		} `json:"edges"`
+	} `json:"services"`
 }
 
 func HermesNewAPIBaseURL() string {
@@ -96,12 +108,12 @@ func DeployHermesTenantOnZeabur(ctx context.Context, req HermesTenantZeaburDeplo
 	}
 
 	variables := map[string]any{
-		"projectId":   projectID,
+		"projectID":   projectID,
 		"rawSpecYaml": renderHermesTenantTemplate(req.Tenant, newAPIBaseURL, req.TenantToken, req.AdminToken),
 	}
 
-	body, err := postZeaburGraphQL(ctx, apiToken, `mutation DeployHermesTenant($rawSpecYaml: String!, $projectId: ObjectID!) {
-  deployTemplate(rawSpecYaml: $rawSpecYaml, projectID: $projectId) {
+	body, err := postZeaburGraphQL(ctx, apiToken, `mutation DeployHermesTenant($rawSpecYaml: String!, $projectID: ObjectID!) {
+  deployTemplate(rawSpecYaml: $rawSpecYaml, projectID: $projectID) {
     _id
   }
 }`, variables)
@@ -114,15 +126,66 @@ func DeployHermesTenantOnZeabur(ctx context.Context, req HermesTenantZeaburDeplo
 		return nil, err
 	}
 	if data.DeployTemplate.ID == "" {
-		return nil, errors.New("zeabur deployTemplate response missing deployment id")
+		return nil, errors.New("zeabur deployTemplate response missing project id")
+	}
+	serviceID, err := findZeaburServiceIDByName(ctx, apiToken, projectID, req.Tenant.ServiceName)
+	if err != nil {
+		return nil, err
 	}
 	return &HermesTenantZeaburDeployResult{
 		ProjectID:     projectID,
 		EnvironmentID: environmentID,
-		DeploymentID:  data.DeployTemplate.ID,
+		ServiceID:     serviceID,
 		ServiceName:   req.Tenant.ServiceName,
 		VolumeName:    req.Tenant.VolumeName,
 	}, nil
+}
+
+func findZeaburServiceIDByName(ctx context.Context, apiToken string, projectID string, serviceName string) (string, error) {
+	if strings.TrimSpace(projectID) == "" || strings.TrimSpace(serviceName) == "" {
+		return "", errors.New("zeabur project id and service name are required")
+	}
+	var lastErr error
+	for attempt := 0; attempt < 6; attempt++ {
+		if attempt > 0 {
+			timer := time.NewTimer(time.Duration(attempt) * time.Second)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return "", ctx.Err()
+			case <-timer.C:
+			}
+		}
+		body, err := postZeaburGraphQL(ctx, apiToken, `query HermesTenantServices($projectID: ObjectID!, $skip: Int!, $limit: Int!) {
+  services(projectID: $projectID, skip: $skip, limit: $limit) {
+    edges {
+      node {
+        _id
+        name
+      }
+    }
+  }
+}`, map[string]any{
+			"projectID": projectID,
+			"skip":      0,
+			"limit":     100,
+		})
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		var data zeaburServicesData
+		if err := json.Unmarshal(body, &data); err != nil {
+			return "", err
+		}
+		for _, edge := range data.Services.Edges {
+			if edge.Node.Name == serviceName && edge.Node.ID != "" {
+				return edge.Node.ID, nil
+			}
+		}
+		lastErr = fmt.Errorf("zeabur service %q not found after deploy", serviceName)
+	}
+	return "", lastErr
 }
 
 func postZeaburGraphQL(ctx context.Context, token string, query string, variables map[string]any) (json.RawMessage, error) {

@@ -113,7 +113,7 @@ func TestAdminDeployHermesTenantByUserCallsZeaburProvisioner(t *testing.T) {
 		return &service.HermesTenantZeaburDeployResult{
 			ProjectID:     "project-id",
 			EnvironmentID: "env-id",
-			DeploymentID:  "deployment-id",
+			ServiceID:     "service-id",
 			ServiceName:   req.Tenant.ServiceName,
 			VolumeName:    req.Tenant.VolumeName,
 		}, nil
@@ -141,7 +141,7 @@ func TestAdminDeployHermesTenantByUserCallsZeaburProvisioner(t *testing.T) {
 	tenant := data["tenant"].(map[string]any)
 	require.Equal(t, "deploying", tenant["status"])
 	require.Equal(t, "project-id", tenant["zeabur_project_id"])
-	require.Equal(t, "deployment-id", tenant["zeabur_deployment_id"])
+	require.Equal(t, "service-id", tenant["zeabur_service_id"])
 }
 
 func TestAdminDeployHermesTenantByUserReusesExistingDeployment(t *testing.T) {
@@ -149,7 +149,7 @@ func TestAdminDeployHermesTenantByUserReusesExistingDeployment(t *testing.T) {
 
 	tenant, _, err := model.EnsureHermesTenantForUser(42)
 	require.NoError(t, err)
-	require.NoError(t, model.MarkHermesTenantDeploying(tenant, "project-id", "env-id", "deployment-id"))
+	require.NoError(t, model.MarkHermesTenantDeploying(tenant, "project-id", "env-id", "service-id", ""))
 
 	original := deployHermesTenantOnZeabur
 	t.Cleanup(func() {
@@ -172,7 +172,7 @@ func TestAdminDeployHermesTenantByUserReusesExistingDeployment(t *testing.T) {
 	require.NoError(t, common.Unmarshal(resp.Data, &data))
 	require.Equal(t, true, data["reused"])
 	tenantData := data["tenant"].(map[string]any)
-	require.Equal(t, "deployment-id", tenantData["zeabur_deployment_id"])
+	require.Equal(t, "service-id", tenantData["zeabur_service_id"])
 }
 
 func TestAdminGetHermesProvisioningConfigDoesNotLeakSecrets(t *testing.T) {

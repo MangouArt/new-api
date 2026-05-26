@@ -348,13 +348,14 @@ func UpdateHermesTenantProvisioning(tenant *HermesTenant, projectID string, envi
 	return DB.Model(tenant).Updates(updates).Error
 }
 
-func MarkHermesTenantDeploying(tenant *HermesTenant, projectID string, environmentID string, deploymentID string) error {
+func MarkHermesTenantDeploying(tenant *HermesTenant, projectID string, environmentID string, serviceID string, deploymentID string) error {
 	if tenant == nil || tenant.ID == 0 {
 		return errors.New("invalid hermes tenant")
 	}
 	updates := map[string]any{
 		"zeabur_project_id":     projectID,
 		"zeabur_environment_id": environmentID,
+		"zeabur_service_id":     serviceID,
 		"zeabur_deployment_id":  deploymentID,
 		"status":                HermesTenantStatusDeploying,
 	}
@@ -363,6 +364,7 @@ func MarkHermesTenantDeploying(tenant *HermesTenant, projectID string, environme
 	}
 	tenant.ZeaburProjectID = projectID
 	tenant.ZeaburEnvironmentID = environmentID
+	tenant.ZeaburServiceID = serviceID
 	tenant.ZeaburDeploymentID = deploymentID
 	tenant.Status = HermesTenantStatusDeploying
 	return nil
