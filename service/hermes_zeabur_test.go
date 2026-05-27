@@ -59,6 +59,7 @@ func TestDeployHermesTenantOnZeaburUsesRawTemplateMutation(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "project-id", result.ProjectID)
 	require.Equal(t, "service-id", result.ServiceID)
+	require.Equal(t, "http://hermes-user-42.zeabur.internal:8642", result.DashboardURL)
 	require.Empty(t, result.DeploymentID)
 	require.Len(t, payloads, 2)
 	require.Contains(t, payloads[0].Query, "deployTemplate(rawSpecYaml: $rawSpecYaml, projectID: $projectID)")

@@ -31,6 +31,7 @@ type HermesTenantZeaburDeployResult struct {
 	ServiceID     string `json:"zeabur_service_id,omitempty"`
 	ServiceName   string `json:"service_name"`
 	VolumeName    string `json:"volume_name"`
+	DashboardURL  string `json:"dashboard_url"`
 }
 
 type HermesZeaburConfigStatus struct {
@@ -138,7 +139,16 @@ func DeployHermesTenantOnZeabur(ctx context.Context, req HermesTenantZeaburDeplo
 		ServiceID:     serviceID,
 		ServiceName:   req.Tenant.ServiceName,
 		VolumeName:    req.Tenant.VolumeName,
+		DashboardURL:  HermesTenantInternalDashboardURL(req.Tenant.ServiceName),
 	}, nil
+}
+
+func HermesTenantInternalDashboardURL(serviceName string) string {
+	serviceName = strings.TrimSpace(serviceName)
+	if serviceName == "" {
+		return ""
+	}
+	return fmt.Sprintf("http://%s.zeabur.internal:8642", serviceName)
 }
 
 func findZeaburServiceIDByName(ctx context.Context, apiToken string, projectID string, serviceName string) (string, error) {

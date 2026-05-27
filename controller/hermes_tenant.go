@@ -313,6 +313,12 @@ func AdminDeployHermesTenantByUser(c *gin.Context) {
 		return
 	}
 	if tenant.ZeaburServiceID != "" && tenant.Status != model.HermesTenantStatusDeployFailed && tenant.Status != model.HermesTenantStatusDeleted {
+		if tenant.DashboardURL == "" {
+			if err := model.UpdateHermesTenantDashboardURL(tenant, service.HermesTenantInternalDashboardURL(tenant.ServiceName)); err != nil {
+				common.ApiError(c, err)
+				return
+			}
+		}
 		common.ApiSuccess(c, gin.H{
 			"tenant":  tenant,
 			"created": created,
@@ -348,7 +354,7 @@ func AdminDeployHermesTenantByUser(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	if err := model.MarkHermesTenantDeploying(tenant, result.ProjectID, result.EnvironmentID, result.ServiceID, result.DeploymentID); err != nil {
+	if err := model.MarkHermesTenantDeploying(tenant, result.ProjectID, result.EnvironmentID, result.ServiceID, result.DeploymentID, result.DashboardURL); err != nil {
 		common.ApiError(c, err)
 		return
 	}
@@ -497,9 +503,9 @@ func startHermesTenantPairing(c *gin.Context, tenant *model.HermesTenant) {
 }
 
 func callHermesRuntimePairing(ctx context.Context, tenant *model.HermesTenant, adminToken string) (*hermesRuntimePairingResponse, error) {
-	rawBaseURL := strings.TrimSpace(tenant.PublicURL)
+	rawBaseURL := strings.TrimSpace(tenant.DashboardURL)
 	if rawBaseURL == "" {
-		rawBaseURL = strings.TrimSpace(tenant.DashboardURL)
+		rawBaseURL = strings.TrimSpace(tenant.PublicURL)
 	}
 	if rawBaseURL == "" {
 		return nil, errors.New("hermes tenant dashboard url is not configured")

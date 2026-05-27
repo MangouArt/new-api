@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { ExternalLink, RefreshCw, RadioTower, Link2 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
+import { toast } from 'sonner'
+import { copyToClipboard } from '@/lib/copy-to-clipboard'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -145,8 +147,29 @@ export function Hermes() {
   const dashboardUrl = '/api/hermes/tenant/dashboard/'
   const adminDashboardUrl = (userID: number) =>
     `/api/hermes/tenants/user/${userID}/dashboard/`
+  const shellCommand = (targetTenant?: HermesTenant | null) => {
+    if (
+      !targetTenant?.zeabur_service_id ||
+      !targetTenant?.zeabur_environment_id
+    ) {
+      return ''
+    }
+    return `zeabur service exec --id ${targetTenant.zeabur_service_id} --env-id ${targetTenant.zeabur_environment_id} -- sh`
+  }
+  async function copyShellCommand(targetTenant?: HermesTenant | null) {
+    const command = shellCommand(targetTenant)
+    if (!command) {
+      toast.error(t('Missing Zeabur service or environment id'))
+      return
+    }
+    if (await copyToClipboard(command)) {
+      toast.success(t('Shell command copied'))
+    } else {
+      toast.error(t('Failed to copy'))
+    }
+  }
   const pairingUrl = pairing?.pairing_url
-  const canOpenDashboard = Boolean(tenant?.public_url || tenant?.dashboard_url)
+  const canOpenDashboard = Boolean(tenant?.dashboard_url)
 
   return (
     <SectionPageLayout>
@@ -229,8 +252,7 @@ export function Hermes() {
                               </div>
                             </TableCell>
                             <TableCell>
-                              {item.tenant?.public_url ||
-                              item.tenant?.dashboard_url ? (
+                              {item.tenant?.dashboard_url ? (
                                 <Button asChild variant='outline' size='sm'>
                                   <a
                                     href={adminDashboardUrl(item.user_id)}
@@ -258,11 +280,10 @@ export function Hermes() {
                                   {deployingUserID === item.user_id
                                     ? t('Deploying')
                                     : item.tenant
-                                      ? t('Repair Deploy')
+                                      ? t('Sync Deploy')
                                       : t('Deploy')}
                                 </Button>
-                                {item.tenant?.public_url ||
-                                item.tenant?.dashboard_url ? (
+                                {item.tenant?.dashboard_url ? (
                                   <Button
                                     variant='outline'
                                     size='sm'
@@ -272,6 +293,17 @@ export function Hermes() {
                                     {pairingUserID === item.user_id
                                       ? t('Pairing')
                                       : t('Pair Feishu')}
+                                  </Button>
+                                ) : null}
+                                {shellCommand(item.tenant) ? (
+                                  <Button
+                                    variant='outline'
+                                    size='sm'
+                                    onClick={() =>
+                                      copyShellCommand(item.tenant)
+                                    }
+                                  >
+                                    {t('Shell')}
                                   </Button>
                                 ) : null}
                               </div>
@@ -322,8 +354,8 @@ export function Hermes() {
                       value={tenant?.service_name}
                     />
                     <DetailRow
-                      label={t('Public URL')}
-                      value={tenant?.public_url}
+                      label={t('Dashboard')}
+                      value={tenant?.dashboard_url ? t('NewAPI proxy') : '-'}
                     />
                     <DetailRow
                       label={t('Last Health Status')}
@@ -345,6 +377,13 @@ export function Hermes() {
                       {t('Open Hermes Dashboard')}
                     </Button>
                   )}
+                  <Button
+                    variant='outline'
+                    disabled={!shellCommand(tenant)}
+                    onClick={() => copyShellCommand(tenant)}
+                  >
+                    {t('Copy Shell Command')}
+                  </Button>
                   <Button
                     variant='outline'
                     onClick={() => window.location.reload()}

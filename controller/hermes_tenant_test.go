@@ -116,6 +116,7 @@ func TestAdminDeployHermesTenantByUserCallsZeaburProvisioner(t *testing.T) {
 			ServiceID:     "service-id",
 			ServiceName:   req.Tenant.ServiceName,
 			VolumeName:    req.Tenant.VolumeName,
+			DashboardURL:  "http://hermes-user-42.zeabur.internal:8642",
 		}, nil
 	}
 
@@ -142,6 +143,7 @@ func TestAdminDeployHermesTenantByUserCallsZeaburProvisioner(t *testing.T) {
 	require.Equal(t, "deploying", tenant["status"])
 	require.Equal(t, "project-id", tenant["zeabur_project_id"])
 	require.Equal(t, "service-id", tenant["zeabur_service_id"])
+	require.Equal(t, "http://hermes-user-42.zeabur.internal:8642", tenant["dashboard_url"])
 }
 
 func TestAdminDeployHermesTenantByUserReusesExistingDeployment(t *testing.T) {
@@ -149,7 +151,7 @@ func TestAdminDeployHermesTenantByUserReusesExistingDeployment(t *testing.T) {
 
 	tenant, _, err := model.EnsureHermesTenantForUser(42)
 	require.NoError(t, err)
-	require.NoError(t, model.MarkHermesTenantDeploying(tenant, "project-id", "env-id", "service-id", ""))
+	require.NoError(t, model.MarkHermesTenantDeploying(tenant, "project-id", "env-id", "service-id", "", ""))
 
 	original := deployHermesTenantOnZeabur
 	t.Cleanup(func() {
@@ -173,6 +175,7 @@ func TestAdminDeployHermesTenantByUserReusesExistingDeployment(t *testing.T) {
 	require.Equal(t, true, data["reused"])
 	tenantData := data["tenant"].(map[string]any)
 	require.Equal(t, "service-id", tenantData["zeabur_service_id"])
+	require.Equal(t, "http://hermes-user-42.zeabur.internal:8642", tenantData["dashboard_url"])
 }
 
 func TestAdminGetHermesProvisioningConfigDoesNotLeakSecrets(t *testing.T) {

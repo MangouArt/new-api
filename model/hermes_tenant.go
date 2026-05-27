@@ -348,7 +348,7 @@ func UpdateHermesTenantProvisioning(tenant *HermesTenant, projectID string, envi
 	return DB.Model(tenant).Updates(updates).Error
 }
 
-func MarkHermesTenantDeploying(tenant *HermesTenant, projectID string, environmentID string, serviceID string, deploymentID string) error {
+func MarkHermesTenantDeploying(tenant *HermesTenant, projectID string, environmentID string, serviceID string, deploymentID string, dashboardURL string) error {
 	if tenant == nil || tenant.ID == 0 {
 		return errors.New("invalid hermes tenant")
 	}
@@ -359,6 +359,9 @@ func MarkHermesTenantDeploying(tenant *HermesTenant, projectID string, environme
 		"zeabur_deployment_id":  deploymentID,
 		"status":                HermesTenantStatusDeploying,
 	}
+	if dashboardURL != "" {
+		updates["dashboard_url"] = dashboardURL
+	}
 	if err := DB.Model(tenant).Updates(updates).Error; err != nil {
 		return err
 	}
@@ -366,7 +369,24 @@ func MarkHermesTenantDeploying(tenant *HermesTenant, projectID string, environme
 	tenant.ZeaburEnvironmentID = environmentID
 	tenant.ZeaburServiceID = serviceID
 	tenant.ZeaburDeploymentID = deploymentID
+	if dashboardURL != "" {
+		tenant.DashboardURL = dashboardURL
+	}
 	tenant.Status = HermesTenantStatusDeploying
+	return nil
+}
+
+func UpdateHermesTenantDashboardURL(tenant *HermesTenant, dashboardURL string) error {
+	if tenant == nil || tenant.ID == 0 {
+		return errors.New("invalid hermes tenant")
+	}
+	if dashboardURL == "" {
+		return nil
+	}
+	if err := DB.Model(tenant).Update("dashboard_url", dashboardURL).Error; err != nil {
+		return err
+	}
+	tenant.DashboardURL = dashboardURL
 	return nil
 }
 

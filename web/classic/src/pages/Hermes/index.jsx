@@ -30,7 +30,7 @@ import {
   Typography,
 } from '@douyinfe/semi-ui';
 import { IconExternalOpen, IconRefresh } from '@douyinfe/semi-icons';
-import { API, showError, showSuccess } from '../../helpers';
+import { API, copy, showError, showSuccess } from '../../helpers';
 
 const { Text, Title } = Typography;
 
@@ -147,6 +147,27 @@ const Hermes = () => {
 
   const adminDashboardUrl = (userID) =>
     `/api/hermes/tenants/user/${userID}/dashboard/`;
+  const shellCommand = (targetTenant) => {
+    if (
+      !targetTenant?.zeabur_service_id ||
+      !targetTenant?.zeabur_environment_id
+    ) {
+      return '';
+    }
+    return `zeabur service exec --id ${targetTenant.zeabur_service_id} --env-id ${targetTenant.zeabur_environment_id} -- sh`;
+  };
+  const copyShellCommand = async (targetTenant) => {
+    const command = shellCommand(targetTenant);
+    if (!command) {
+      showError(t('缺少 Zeabur Service ID 或 Environment ID'));
+      return;
+    }
+    if (await copy(command)) {
+      showSuccess(t('Shell 命令已复制'));
+    } else {
+      showError(t('复制失败'));
+    }
+  };
 
   const columns = useMemo(
     () => [
@@ -206,7 +227,7 @@ const Hermes = () => {
         title: t('入口'),
         dataIndex: 'public_url',
         render: (_, record) =>
-          record.tenant?.public_url || record.tenant?.dashboard_url ? (
+          record.tenant?.dashboard_url ? (
             <Button
               theme='outline'
               icon={<IconExternalOpen />}
@@ -232,9 +253,9 @@ const Hermes = () => {
               disabled={deployingUserID !== null}
               onClick={() => deployForUser(record.user_id)}
             >
-              {record.tenant ? t('修复部署') : t('部署')}
+              {record.tenant ? t('同步部署') : t('部署')}
             </Button>
-            {record.tenant?.public_url || record.tenant?.dashboard_url ? (
+            {record.tenant?.dashboard_url ? (
               <Button
                 theme='outline'
                 loading={pairingUserID === record.user_id}
@@ -242,6 +263,14 @@ const Hermes = () => {
                 onClick={() => pairForUser(record.user_id)}
               >
                 {t('飞书配对')}
+              </Button>
+            ) : null}
+            {shellCommand(record.tenant) ? (
+              <Button
+                theme='outline'
+                onClick={() => copyShellCommand(record.tenant)}
+              >
+                {t('Shell')}
               </Button>
             ) : null}
           </Space>
@@ -253,7 +282,7 @@ const Hermes = () => {
 
   const dashboardUrl = '/api/hermes/tenant/dashboard/';
   const pairingUrl = pairing?.pairing_url;
-  const canOpenDashboard = Boolean(tenant?.public_url || tenant?.dashboard_url);
+  const canOpenDashboard = Boolean(tenant?.dashboard_url);
 
   return (
     <div className='mt-[60px] px-2'>
@@ -317,7 +346,10 @@ const Hermes = () => {
                 label={t('Service Name')}
                 value={tenant?.service_name}
               />
-              <DetailRow label={t('Public URL')} value={tenant?.public_url} />
+              <DetailRow
+                label={t('Dashboard')}
+                value={tenant?.dashboard_url ? t('NewAPI 中转') : '-'}
+              />
               <DetailRow
                 label={t('Last Health Status')}
                 value={tenant?.last_health_status}
@@ -329,6 +361,13 @@ const Hermes = () => {
                 onClick={() => window.open(dashboardUrl, '_blank')}
               >
                 {t('打开 Hermes Dashboard')}
+              </Button>
+              <Button
+                theme='outline'
+                disabled={!shellCommand(tenant)}
+                onClick={() => copyShellCommand(tenant)}
+              >
+                {t('复制 Shell 命令')}
               </Button>
             </Space>
           </Card>
