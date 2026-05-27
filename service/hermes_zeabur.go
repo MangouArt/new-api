@@ -287,6 +287,10 @@ spec:
             default: %s/v1
           OPENAI_API_KEY:
             default: %s
+          OPENAI_MODEL:
+            default: gpt-5.5
+          HERMES_DEFAULT_PROVIDER:
+            default: newapi
           HERMES_ADMIN_TOKEN:
             default: %s
           FEISHU_PAIRING_MODE:

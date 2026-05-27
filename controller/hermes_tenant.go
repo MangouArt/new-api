@@ -191,16 +191,91 @@ func proxyHermesTenantDashboard(c *gin.Context, tenant *model.HermesTenant, forw
 		return
 	}
 	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	body = rewriteHermesDashboardProxyBody(body, resp.Header.Get("Content-Type"), forwardedPrefix)
 
 	for key, values := range resp.Header {
+		if strings.EqualFold(key, "Content-Length") {
+			continue
+		}
 		for _, value := range values {
 			c.Writer.Header().Add(key, value)
 		}
 	}
+	c.Writer.Header().Set("Content-Length", strconv.Itoa(len(body)))
 	c.Status(resp.StatusCode)
-	if _, err := io.Copy(c.Writer, resp.Body); err != nil {
+	if _, err := c.Writer.Write(body); err != nil {
 		common.SysLog("failed to proxy hermes dashboard response: " + err.Error())
 	}
+}
+
+func rewriteHermesDashboardProxyBody(body []byte, contentType string, forwardedPrefix string) []byte {
+	prefix := strings.TrimRight(forwardedPrefix, "/")
+	if prefix == "" {
+		return body
+	}
+	lowerContentType := strings.ToLower(contentType)
+	text := string(body)
+	switch {
+	case strings.Contains(lowerContentType, "text/html"):
+		text = rewriteHermesHTMLAbsolutePaths(text, prefix)
+		injectedBase := `<script>window.__HERMES_BASE_PATH__=` + strconv.Quote(prefix) + `;</script>`
+		if strings.Contains(text, "</head>") && !strings.Contains(text, "__HERMES_BASE_PATH__") {
+			text = strings.Replace(text, "</head>", injectedBase+"</head>", 1)
+		}
+	case strings.Contains(lowerContentType, "text/css") || strings.Contains(lowerContentType, "javascript"):
+		text = rewriteHermesAbsolutePaths(text, prefix)
+	default:
+		return body
+	}
+	return []byte(text)
+}
+
+func rewriteHermesHTMLAbsolutePaths(text string, prefix string) string {
+	replacements := []struct {
+		old string
+		new string
+	}{
+		{`href="/`, `href="` + prefix + `/`},
+		{`src="/`, `src="` + prefix + `/`},
+		{`action="/`, `action="` + prefix + `/`},
+		{`content="/`, `content="` + prefix + `/`},
+	}
+	for _, replacement := range replacements {
+		text = strings.ReplaceAll(text, replacement.old, replacement.new)
+	}
+	return text
+}
+
+func rewriteHermesAbsolutePaths(text string, prefix string) string {
+	replacements := []struct {
+		old string
+		new string
+	}{
+		{`url(/`, `url(` + prefix + `/`},
+		{`url('/`, `url('` + prefix + `/`},
+		{`url("/`, `url("` + prefix + `/`},
+		{`"/assets/`, `"` + prefix + `/assets/`},
+		{`'/assets/`, `'` + prefix + `/assets/`},
+		{`"/ds-assets/`, `"` + prefix + `/ds-assets/`},
+		{`'/ds-assets/`, `'` + prefix + `/ds-assets/`},
+		{`"/fonts/`, `"` + prefix + `/fonts/`},
+		{`'/fonts/`, `'` + prefix + `/fonts/`},
+		{`"/fonts-terminal/`, `"` + prefix + `/fonts-terminal/`},
+		{`'/fonts-terminal/`, `'` + prefix + `/fonts-terminal/`},
+		{`"/favicon.ico`, `"` + prefix + `/favicon.ico`},
+		{`'/favicon.ico`, `'` + prefix + `/favicon.ico`},
+		{`"/api/`, `"` + prefix + `/api/`},
+		{`'/api/`, `'` + prefix + `/api/`},
+	}
+	for _, replacement := range replacements {
+		text = strings.ReplaceAll(text, replacement.old, replacement.new)
+	}
+	return text
 }
 
 func isHermesRuntimeAdminPath(proxyPath string) bool {

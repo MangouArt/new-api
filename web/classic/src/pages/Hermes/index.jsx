@@ -154,7 +154,7 @@ const Hermes = () => {
     ) {
       return '';
     }
-    return `zeabur service exec --id ${targetTenant.zeabur_service_id} --env-id ${targetTenant.zeabur_environment_id} -- sh`;
+    return `zeabur service exec --id ${targetTenant.zeabur_service_id} --env-id ${targetTenant.zeabur_environment_id} -- /bin/sh`;
   };
   const copyShellCommand = async (targetTenant) => {
     const command = shellCommand(targetTenant);
