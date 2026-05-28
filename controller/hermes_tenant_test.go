@@ -364,6 +364,41 @@ func TestProxyHermesTenantDashboardByHostIgnoresNonHermesSubdomains(t *testing.T
 	require.False(t, TryProxyHermesTenantDashboardByHost(ctx))
 }
 
+func TestProxyHermesTenantDashboardByForwardedHost(t *testing.T) {
+	setupHermesTenantControllerTestDB(t)
+	t.Setenv("HERMES_DASHBOARD_DOMAIN_SUFFIX", "mangou.art")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/dashboard/", r.URL.Path)
+		_, _ = w.Write([]byte("forwarded host dashboard ok"))
+	}))
+	t.Cleanup(server.Close)
+
+	tenant, _, err := model.EnsureHermesTenantForUser(42)
+	require.NoError(t, err)
+	_, _, err = model.EnsureHermesTenantAdminToken(tenant)
+	require.NoError(t, err)
+	require.NoError(t, model.UpdateHermesTenantProvisioning(tenant, "project", "env", "service", "volume", server.URL+"/dashboard"))
+
+	router := gin.New()
+	router.Use(sessions.Sessions("session", cookie.NewStore([]byte("secret"))))
+	router.GET("/*proxy_path", func(c *gin.Context) {
+		session := sessions.Default(c)
+		session.Set("id", 42)
+		session.Set("role", common.RoleCommonUser)
+		require.NoError(t, session.Save())
+		require.True(t, TryProxyHermesTenantDashboardByHost(c))
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "https://api.mangou.art/", nil)
+	req.Header.Set("X-Hermes-Dashboard-Host", "hermes-user-42.mangou.art")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, req)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Equal(t, "forwarded host dashboard ok", recorder.Body.String())
+}
+
 func TestAdminProxyHermesTenantDashboardForwardsSelectedUser(t *testing.T) {
 	setupHermesTenantControllerTestDB(t)
 

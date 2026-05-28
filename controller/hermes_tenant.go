@@ -154,7 +154,10 @@ func proxyHermesTenantDashboard(c *gin.Context, tenant *model.HermesTenant, forw
 }
 
 func TryProxyHermesTenantDashboardByHost(c *gin.Context) bool {
-	host := strings.ToLower(strings.TrimSpace(c.Request.Host))
+	host := strings.ToLower(strings.TrimSpace(c.GetHeader("X-Hermes-Dashboard-Host")))
+	if host == "" {
+		host = strings.ToLower(strings.TrimSpace(c.Request.Host))
+	}
 	if colon := strings.LastIndex(host, ":"); colon >= 0 {
 		host = host[:colon]
 	}
