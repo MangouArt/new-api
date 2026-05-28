@@ -319,7 +319,7 @@ func TestProxyHermesTenantDashboardRewritesStaticBasePath(t *testing.T) {
 
 func TestProxyHermesTenantDashboardByHost(t *testing.T) {
 	setupHermesTenantControllerTestDB(t)
-	t.Setenv("HERMES_DASHBOARD_DOMAIN_SUFFIX", "hermes.mangou.art")
+	t.Setenv("HERMES_DASHBOARD_DOMAIN_SUFFIX", "mangou.art")
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, "/dashboard/api/status", r.URL.Path)
@@ -346,12 +346,22 @@ func TestProxyHermesTenantDashboardByHost(t *testing.T) {
 		require.True(t, TryProxyHermesTenantDashboardByHost(c))
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "https://hermes-user-42.hermes.mangou.art/api/status", nil)
+	req := httptest.NewRequest(http.MethodGet, "https://hermes-user-42.mangou.art/api/status", nil)
 	recorder := httptest.NewRecorder()
 	router.ServeHTTP(recorder, req)
 
 	require.Equal(t, http.StatusOK, recorder.Code)
 	require.Equal(t, "host dashboard ok", recorder.Body.String())
+}
+
+func TestProxyHermesTenantDashboardByHostIgnoresNonHermesSubdomains(t *testing.T) {
+	setupHermesTenantControllerTestDB(t)
+	t.Setenv("HERMES_DASHBOARD_DOMAIN_SUFFIX", "mangou.art")
+
+	ctx, _ := newAuthenticatedContext(t, http.MethodGet, "/api/status", nil, 42)
+	ctx.Request.Host = "api.mangou.art"
+
+	require.False(t, TryProxyHermesTenantDashboardByHost(ctx))
 }
 
 func TestAdminProxyHermesTenantDashboardForwardsSelectedUser(t *testing.T) {

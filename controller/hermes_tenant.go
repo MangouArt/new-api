@@ -166,6 +166,9 @@ func TryProxyHermesTenantDashboardByHost(c *gin.Context) bool {
 	if serviceName == "" {
 		return false
 	}
+	if !strings.HasPrefix(serviceName, "hermes-user-") {
+		return false
+	}
 	tenant, err := model.GetHermesTenantByServiceName(serviceName)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
