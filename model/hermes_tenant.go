@@ -123,6 +123,18 @@ func GetHermesTenantByUserID(userID int) (*HermesTenant, error) {
 	return &tenant, nil
 }
 
+func GetHermesTenantByServiceName(serviceName string) (*HermesTenant, error) {
+	if serviceName == "" {
+		return nil, errors.New("invalid hermes service name")
+	}
+	var tenant HermesTenant
+	err := DB.Where("service_name = ?", serviceName).First(&tenant).Error
+	if err != nil {
+		return nil, err
+	}
+	return &tenant, nil
+}
+
 func ListHermesTenantUsers(pageInfo *common.PageInfo) ([]*HermesTenantUser, int64, error) {
 	var total int64
 	if err := DB.Unscoped().Model(&User{}).Count(&total).Error; err != nil {
@@ -387,6 +399,20 @@ func UpdateHermesTenantDashboardURL(tenant *HermesTenant, dashboardURL string) e
 		return err
 	}
 	tenant.DashboardURL = dashboardURL
+	return nil
+}
+
+func UpdateHermesTenantPublicURL(tenant *HermesTenant, publicURL string) error {
+	if tenant == nil || tenant.ID == 0 {
+		return errors.New("invalid hermes tenant")
+	}
+	if publicURL == "" {
+		return nil
+	}
+	if err := DB.Model(tenant).Update("public_url", publicURL).Error; err != nil {
+		return err
+	}
+	tenant.PublicURL = publicURL
 	return nil
 }
 

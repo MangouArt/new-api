@@ -7,12 +7,20 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/controller"
 	"github.com/QuantumNous/new-api/middleware"
 
 	"github.com/gin-gonic/gin"
 )
 
 func SetRouter(router *gin.Engine, assets ThemeAssets) {
+	router.Use(func(c *gin.Context) {
+		if controller.TryProxyHermesTenantDashboardByHost(c) {
+			c.Abort()
+			return
+		}
+		c.Next()
+	})
 	SetApiRouter(router)
 	SetDashboardRouter(router)
 	SetRelayRouter(router)

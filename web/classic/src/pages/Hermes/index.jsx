@@ -145,8 +145,9 @@ const Hermes = () => {
     reload();
   }, []);
 
-  const adminDashboardUrl = (userID) =>
-    `/api/hermes/tenants/user/${userID}/dashboard/`;
+  const adminDashboardUrl = (record) =>
+    record.tenant?.public_url ||
+    `/api/hermes/tenants/user/${record.user_id}/dashboard/`;
   const shellCommand = (targetTenant) => {
     if (
       !targetTenant?.zeabur_service_id ||
@@ -232,7 +233,7 @@ const Hermes = () => {
               theme='outline'
               icon={<IconExternalOpen />}
               onClick={() =>
-                window.open(adminDashboardUrl(record.user_id), '_blank')
+                window.open(adminDashboardUrl(record), '_blank')
               }
             >
               {t('打开')}
@@ -280,7 +281,7 @@ const Hermes = () => {
     [deployingUserID, pairingUserID, t],
   );
 
-  const dashboardUrl = '/api/hermes/tenant/dashboard/';
+  const dashboardUrl = tenant?.public_url || '/api/hermes/tenant/dashboard/';
   const pairingUrl = pairing?.pairing_url;
   const canOpenDashboard = Boolean(tenant?.dashboard_url);
 

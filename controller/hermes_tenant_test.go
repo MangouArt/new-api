@@ -11,6 +11,8 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/gin-contrib/sessions"
+	"github.com/gin-contrib/sessions/cookie"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/require"
@@ -313,6 +315,43 @@ func TestProxyHermesTenantDashboardRewritesStaticBasePath(t *testing.T) {
 	require.Contains(t, body, `href="/api/hermes/tenant/dashboard/favicon.ico"`)
 	require.Contains(t, body, `src="/api/hermes/tenant/dashboard/assets/app.js"`)
 	require.Contains(t, body, `href="/api/hermes/tenant/dashboard/assets/app.css"`)
+}
+
+func TestProxyHermesTenantDashboardByHost(t *testing.T) {
+	setupHermesTenantControllerTestDB(t)
+	t.Setenv("HERMES_DASHBOARD_DOMAIN_SUFFIX", "hermes.mangou.art")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/dashboard/api/status", r.URL.Path)
+		require.Equal(t, "42", r.Header.Get("New-Api-User"))
+		require.Equal(t, "secret-admin", r.Header.Get("X-Hermes-Admin-Token"))
+		require.Empty(t, r.Header.Get("X-Forwarded-Prefix"))
+		_, _ = w.Write([]byte("host dashboard ok"))
+	}))
+	t.Cleanup(server.Close)
+
+	tenant, _, err := model.EnsureHermesTenantForUser(42)
+	require.NoError(t, err)
+	tenant.HermesAdminToken = "secret-admin"
+	require.NoError(t, model.DB.Save(tenant).Error)
+	require.NoError(t, model.UpdateHermesTenantProvisioning(tenant, "project", "env", "service", "volume", server.URL+"/dashboard"))
+
+	router := gin.New()
+	router.Use(sessions.Sessions("session", cookie.NewStore([]byte("secret"))))
+	router.GET("/*proxy_path", func(c *gin.Context) {
+		session := sessions.Default(c)
+		session.Set("id", 42)
+		session.Set("role", common.RoleCommonUser)
+		require.NoError(t, session.Save())
+		require.True(t, TryProxyHermesTenantDashboardByHost(c))
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "https://hermes-user-42.hermes.mangou.art/api/status", nil)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, req)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Equal(t, "host dashboard ok", recorder.Body.String())
 }
 
 func TestAdminProxyHermesTenantDashboardForwardsSelectedUser(t *testing.T) {

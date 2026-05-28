@@ -13,6 +13,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/gin-contrib/sessions"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -149,6 +150,51 @@ func AdminProxyHermesTenantDashboardByUser(c *gin.Context) {
 }
 
 func proxyHermesTenantDashboard(c *gin.Context, tenant *model.HermesTenant, forwardedPrefix string) {
+	proxyHermesTenantDashboardPath(c, tenant, forwardedPrefix, c.Param("proxy_path"))
+}
+
+func TryProxyHermesTenantDashboardByHost(c *gin.Context) bool {
+	host := strings.ToLower(strings.TrimSpace(c.Request.Host))
+	if colon := strings.LastIndex(host, ":"); colon >= 0 {
+		host = host[:colon]
+	}
+	suffix := service.HermesDashboardDomainSuffix()
+	if suffix == "" || host == suffix || !strings.HasSuffix(host, "."+suffix) {
+		return false
+	}
+	serviceName := strings.TrimSuffix(host, "."+suffix)
+	if serviceName == "" {
+		return false
+	}
+	tenant, err := model.GetHermesTenantByServiceName(serviceName)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			common.ApiError(c, errors.New("hermes tenant not found for dashboard host"))
+			return true
+		}
+		common.ApiError(c, err)
+		return true
+	}
+	session := sessions.Default(c)
+	authUserID, _ := session.Get("id").(int)
+	authRole, _ := session.Get("role").(int)
+	if authUserID == 0 {
+		common.ApiError(c, errors.New("not logged in"))
+		return true
+	}
+	if authUserID != tenant.UserID && authRole < common.RoleAdminUser {
+		common.ApiError(c, errors.New("hermes tenant dashboard access denied"))
+		return true
+	}
+	proxyPath := c.Request.URL.Path
+	if proxyPath == "" {
+		proxyPath = "/"
+	}
+	proxyHermesTenantDashboardPath(c, tenant, "", proxyPath)
+	return true
+}
+
+func proxyHermesTenantDashboardPath(c *gin.Context, tenant *model.HermesTenant, forwardedPrefix string, proxyPath string) {
 	rawBaseURL := strings.TrimSpace(tenant.DashboardURL)
 	if rawBaseURL == "" {
 		rawBaseURL = strings.TrimSpace(tenant.PublicURL)
@@ -163,7 +209,6 @@ func proxyHermesTenantDashboard(c *gin.Context, tenant *model.HermesTenant, forw
 		return
 	}
 
-	proxyPath := c.Param("proxy_path")
 	if proxyPath == "" {
 		proxyPath = "/"
 	}
@@ -183,7 +228,9 @@ func proxyHermesTenantDashboard(c *gin.Context, tenant *model.HermesTenant, forw
 	req.Host = target.Host
 	req.Header.Set("New-Api-User", strconv.Itoa(tenant.UserID))
 	req.Header.Set("X-Hermes-Admin-Token", tenant.HermesAdminToken)
-	req.Header.Set("X-Forwarded-Prefix", forwardedPrefix)
+	if forwardedPrefix != "" {
+		req.Header.Set("X-Forwarded-Prefix", forwardedPrefix)
+	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -394,6 +441,12 @@ func AdminDeployHermesTenantByUser(c *gin.Context) {
 				return
 			}
 		}
+		if tenant.PublicURL == "" {
+			if err := model.UpdateHermesTenantPublicURL(tenant, service.HermesTenantPublicDashboardURL(tenant)); err != nil {
+				common.ApiError(c, err)
+				return
+			}
+		}
 		common.ApiSuccess(c, gin.H{
 			"tenant":  tenant,
 			"created": created,
@@ -430,6 +483,10 @@ func AdminDeployHermesTenantByUser(c *gin.Context) {
 		return
 	}
 	if err := model.MarkHermesTenantDeploying(tenant, result.ProjectID, result.EnvironmentID, result.ServiceID, result.DeploymentID, result.DashboardURL); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if err := model.UpdateHermesTenantPublicURL(tenant, service.HermesTenantPublicDashboardURL(tenant)); err != nil {
 		common.ApiError(c, err)
 		return
 	}

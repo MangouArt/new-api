@@ -67,6 +67,18 @@ func HermesNewAPIBaseURL() string {
 	return strings.TrimRight(strings.TrimSpace(os.Getenv("HERMES_NEWAPI_BASE_URL")), "/")
 }
 
+func HermesDashboardDomainSuffix() string {
+	return strings.Trim(strings.ToLower(strings.TrimSpace(os.Getenv("HERMES_DASHBOARD_DOMAIN_SUFFIX"))), ".")
+}
+
+func HermesTenantPublicDashboardURL(tenant *model.HermesTenant) string {
+	suffix := HermesDashboardDomainSuffix()
+	if tenant == nil || strings.TrimSpace(tenant.ServiceName) == "" || suffix == "" {
+		return ""
+	}
+	return fmt.Sprintf("https://%s.%s/", strings.ToLower(strings.TrimSpace(tenant.ServiceName)), suffix)
+}
+
 func HermesZeaburConfig() HermesZeaburConfigStatus {
 	missing := make([]string, 0)
 	if strings.TrimSpace(os.Getenv("ZEABUR_API_TOKEN")) == "" {
