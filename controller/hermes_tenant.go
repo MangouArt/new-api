@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
@@ -42,6 +43,8 @@ type hermesRuntimePairingResponse struct {
 }
 
 var deployHermesTenantOnZeabur = service.DeployHermesTenantOnZeabur
+
+var hermesDashboardSessionTokens sync.Map
 
 func GetHermesTenantSelf(c *gin.Context) {
 	tenant, err := model.GetHermesTenantByUserID(c.GetInt("id"))
@@ -234,6 +237,13 @@ func proxyHermesTenantDashboardPath(c *gin.Context, tenant *model.HermesTenant, 
 	req.Host = target.Host
 	req.Header.Set("New-Api-User", strconv.Itoa(tenant.UserID))
 	req.Header.Set("X-Hermes-Admin-Token", tenant.HermesAdminToken)
+	if shouldInjectHermesDashboardSessionToken(proxyPath) {
+		if token := getHermesDashboardSessionToken(tenant); token != "" {
+			req.Header.Set("X-Hermes-Session-Token", token)
+		} else if token := fetchHermesDashboardSessionToken(c.Request.Context(), target.String(), tenant); token != "" {
+			req.Header.Set("X-Hermes-Session-Token", token)
+		}
+	}
 	if forwardedPrefix != "" {
 		req.Header.Set("X-Forwarded-Prefix", forwardedPrefix)
 	}
@@ -249,6 +259,7 @@ func proxyHermesTenantDashboardPath(c *gin.Context, tenant *model.HermesTenant, 
 		common.ApiError(c, err)
 		return
 	}
+	rememberHermesDashboardSessionToken(tenant, body, resp.Header.Get("Content-Type"))
 	body = rewriteHermesDashboardProxyBody(body, resp.Header.Get("Content-Type"), forwardedPrefix)
 
 	for key, values := range resp.Header {
@@ -264,6 +275,81 @@ func proxyHermesTenantDashboardPath(c *gin.Context, tenant *model.HermesTenant, 
 	if _, err := c.Writer.Write(body); err != nil {
 		common.SysLog("failed to proxy hermes dashboard response: " + err.Error())
 	}
+}
+
+func shouldInjectHermesDashboardSessionToken(proxyPath string) bool {
+	if !strings.HasPrefix(proxyPath, "/") {
+		proxyPath = "/" + proxyPath
+	}
+	return strings.HasPrefix(proxyPath, "/api/") && proxyPath != "/api/status"
+}
+
+func getHermesDashboardSessionToken(tenant *model.HermesTenant) string {
+	if tenant == nil || tenant.ID == 0 {
+		return ""
+	}
+	token, _ := hermesDashboardSessionTokens.Load(tenant.ID)
+	if value, ok := token.(string); ok {
+		return value
+	}
+	return ""
+}
+
+func rememberHermesDashboardSessionToken(tenant *model.HermesTenant, body []byte, contentType string) {
+	if tenant == nil || tenant.ID == 0 || !strings.Contains(strings.ToLower(contentType), "text/html") {
+		return
+	}
+	token := extractHermesDashboardSessionToken(string(body))
+	if token == "" {
+		return
+	}
+	hermesDashboardSessionTokens.Store(tenant.ID, token)
+}
+
+func fetchHermesDashboardSessionToken(ctx context.Context, rawBaseURL string, tenant *model.HermesTenant) string {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawBaseURL, nil)
+	if err != nil {
+		return ""
+	}
+	req.Header.Set("New-Api-User", strconv.Itoa(tenant.UserID))
+	req.Header.Set("X-Hermes-Admin-Token", tenant.HermesAdminToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		common.SysLog("failed to fetch hermes dashboard session token: " + err.Error())
+		return ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 || !strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/html") {
+		return ""
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return ""
+	}
+	rememberHermesDashboardSessionToken(tenant, body, resp.Header.Get("Content-Type"))
+	return getHermesDashboardSessionToken(tenant)
+}
+
+func extractHermesDashboardSessionToken(text string) string {
+	const marker = "window.__HERMES_SESSION_TOKEN__="
+	idx := strings.Index(text, marker)
+	if idx < 0 {
+		return ""
+	}
+	rest := text[idx+len(marker):]
+	if len(rest) < 2 {
+		return ""
+	}
+	quote := rest[0]
+	if quote != '"' && quote != '\'' {
+		return ""
+	}
+	rest = rest[1:]
+	end := strings.IndexByte(rest, quote)
+	if end < 0 {
+		return ""
+	}
+	return rest[:end]
 }
 
 func rewriteHermesDashboardProxyBody(body []byte, contentType string, forwardedPrefix string) []byte {

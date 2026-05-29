@@ -317,6 +317,41 @@ func TestProxyHermesTenantDashboardRewritesStaticBasePath(t *testing.T) {
 	require.Contains(t, body, `href="/api/hermes/tenant/dashboard/assets/app.css"`)
 }
 
+func TestProxyHermesTenantDashboardInjectsSessionTokenForProtectedAPI(t *testing.T) {
+	setupHermesTenantControllerTestDB(t)
+
+	var sawSessionToken string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/dashboard":
+			w.Header().Set("Content-Type", "text/html")
+			_, _ = w.Write([]byte(`<script>window.__HERMES_SESSION_TOKEN__="session-token";</script>`))
+		case "/dashboard/":
+			w.Header().Set("Content-Type", "text/html")
+			_, _ = w.Write([]byte(`<script>window.__HERMES_SESSION_TOKEN__="session-token";</script>`))
+		case "/dashboard/api/config":
+			sawSessionToken = r.Header.Get("X-Hermes-Session-Token")
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	tenant, _, err := model.EnsureHermesTenantForUser(42)
+	require.NoError(t, err)
+	_, _, err = model.EnsureHermesTenantAdminToken(tenant)
+	require.NoError(t, err)
+	require.NoError(t, model.UpdateHermesTenantProvisioning(tenant, "project", "env", "service", "volume", server.URL+"/dashboard"))
+
+	ctx, recorder := newAuthenticatedContext(t, http.MethodGet, "/api/hermes/tenant/dashboard/api/config", nil, 42)
+	ctx.Params = gin.Params{{Key: "proxy_path", Value: "/api/config"}}
+	ProxyHermesTenantDashboard(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Equal(t, "session-token", sawSessionToken)
+}
+
 func TestProxyHermesTenantDashboardByHost(t *testing.T) {
 	setupHermesTenantControllerTestDB(t)
 	t.Setenv("HERMES_DASHBOARD_DOMAIN_SUFFIX", "mangou.art")
