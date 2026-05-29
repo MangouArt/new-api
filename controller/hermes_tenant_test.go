@@ -317,6 +317,33 @@ func TestProxyHermesTenantDashboardRewritesStaticBasePath(t *testing.T) {
 	require.Contains(t, body, `href="/api/hermes/tenant/dashboard/assets/app.css"`)
 }
 
+func TestProxyHermesTenantDashboardDoesNotDoubleRewriteBackendBasePath(t *testing.T) {
+	setupHermesTenantControllerTestDB(t)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/", r.URL.Path)
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(`<!doctype html><html><head><link rel="icon" href="/api/hermes/tenant/dashboard/favicon.ico"><script type="module" src="/api/hermes/tenant/dashboard/assets/app.js"></script><script>window.__HERMES_BASE_PATH__="/api/hermes/tenant/dashboard";</script></head></html>`))
+	}))
+	t.Cleanup(server.Close)
+
+	tenant, _, err := model.EnsureHermesTenantForUser(42)
+	require.NoError(t, err)
+	_, _, err = model.EnsureHermesTenantAdminToken(tenant)
+	require.NoError(t, err)
+	require.NoError(t, model.UpdateHermesTenantProvisioning(tenant, "project", "env", "service", "volume", server.URL))
+
+	ctx, recorder := newAuthenticatedContext(t, http.MethodGet, "/api/hermes/tenant/dashboard/", nil, 42)
+	ctx.Params = gin.Params{{Key: "proxy_path", Value: "/"}}
+	ProxyHermesTenantDashboard(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	body := recorder.Body.String()
+	require.Contains(t, body, `href="/api/hermes/tenant/dashboard/favicon.ico"`)
+	require.Contains(t, body, `src="/api/hermes/tenant/dashboard/assets/app.js"`)
+	require.NotContains(t, body, `/api/hermes/tenant/dashboard/api/hermes/tenant/dashboard`)
+}
+
 func TestProxyHermesTenantDashboardInjectsSessionTokenForProtectedAPI(t *testing.T) {
 	setupHermesTenantControllerTestDB(t)
 

@@ -361,12 +361,15 @@ func rewriteHermesDashboardProxyBody(body []byte, contentType string, forwardedP
 	text := string(body)
 	switch {
 	case strings.Contains(lowerContentType, "text/html"):
-		text = rewriteHermesHTMLAbsolutePaths(text, prefix)
-		injectedBase := `<script>window.__HERMES_BASE_PATH__=` + strconv.Quote(prefix) + `;</script>`
-		if strings.Contains(text, "</head>") && !strings.Contains(text, "__HERMES_BASE_PATH__") {
+		if !strings.Contains(text, "__HERMES_BASE_PATH__") {
+			text = rewriteHermesHTMLAbsolutePaths(text, prefix)
+			injectedBase := `<script>window.__HERMES_BASE_PATH__=` + strconv.Quote(prefix) + `;</script>`
 			text = strings.Replace(text, "</head>", injectedBase+"</head>", 1)
 		}
 	case strings.Contains(lowerContentType, "text/css") || strings.Contains(lowerContentType, "javascript"):
+		if strings.Contains(text, prefix) {
+			return body
+		}
 		text = rewriteHermesAbsolutePaths(text, prefix)
 	default:
 		return body
