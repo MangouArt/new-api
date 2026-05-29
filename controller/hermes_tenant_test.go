@@ -352,6 +352,12 @@ func TestProxyHermesTenantDashboardInjectsSessionTokenForProtectedAPI(t *testing
 	require.Equal(t, "session-token", sawSessionToken)
 }
 
+func TestHermesDashboardProxyBaseURLUsesDashboardBackendPort(t *testing.T) {
+	require.Equal(t, "http://hermes-user-42.zeabur.internal:8643", hermesDashboardProxyBaseURL("http://hermes-user-42.zeabur.internal:8642"))
+	require.Equal(t, "http://service-abc:8643/base", hermesDashboardProxyBaseURL("http://service-abc:8642/base"))
+	require.Equal(t, "http://127.0.0.1:9000", hermesDashboardProxyBaseURL("http://127.0.0.1:9000"))
+}
+
 func TestProxyHermesTenantDashboardByHost(t *testing.T) {
 	setupHermesTenantControllerTestDB(t)
 	t.Setenv("HERMES_DASHBOARD_DOMAIN_SUFFIX", "mangou.art")
