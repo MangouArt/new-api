@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -213,7 +212,6 @@ func proxyHermesTenantDashboardPath(c *gin.Context, tenant *model.HermesTenant, 
 		common.ApiError(c, errors.New("hermes tenant dashboard url is not configured"))
 		return
 	}
-	rawBaseURL = hermesDashboardProxyBaseURL(rawBaseURL)
 	target, err := url.Parse(rawBaseURL)
 	if err != nil || target.Scheme == "" || target.Host == "" {
 		common.ApiError(c, errors.New("invalid hermes tenant dashboard url"))
@@ -330,17 +328,6 @@ func fetchHermesDashboardSessionToken(ctx context.Context, rawBaseURL string, te
 	}
 	rememberHermesDashboardSessionToken(tenant, body, resp.Header.Get("Content-Type"))
 	return getHermesDashboardSessionToken(tenant)
-}
-
-func hermesDashboardProxyBaseURL(rawBaseURL string) string {
-	target, err := url.Parse(strings.TrimSpace(rawBaseURL))
-	if err != nil || target.Scheme == "" || target.Host == "" {
-		return rawBaseURL
-	}
-	if target.Port() == "8642" {
-		target.Host = net.JoinHostPort(target.Hostname(), "8643")
-	}
-	return target.String()
 }
 
 func extractHermesDashboardSessionToken(text string) string {
