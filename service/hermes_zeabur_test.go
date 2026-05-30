@@ -79,7 +79,7 @@ func TestDeployHermesTenantOnZeaburUsesRawTemplateMutation(t *testing.T) {
 	require.Contains(t, rawSpecYaml, "HERMES_INFERENCE_PROVIDER:")
 	require.Contains(t, rawSpecYaml, "default: custom:newapi")
 	require.Contains(t, rawSpecYaml, "HERMES_NEWAPI_TRANSPORT:")
-	require.Contains(t, rawSpecYaml, "default: responses")
+	require.Contains(t, rawSpecYaml, "default: codex_responses")
 	require.Contains(t, payloads[1].Query, "services(projectID: $projectID")
 	require.Equal(t, "project-id", payloads[1].Variables["projectID"])
 }
