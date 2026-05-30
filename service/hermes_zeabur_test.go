@@ -68,6 +68,8 @@ func TestDeployHermesTenantOnZeaburUsesRawTemplateMutation(t *testing.T) {
 	rawSpecYaml, ok := payloads[0].Variables["rawSpecYaml"].(string)
 	require.True(t, ok)
 	require.Contains(t, rawSpecYaml, "name: hermes-user-42")
+	require.Contains(t, rawSpecYaml, "id: hermes-user-42-data")
+	require.NotContains(t, rawSpecYaml, "id: hermes-data")
 	require.Contains(t, rawSpecYaml, "NEWAPI_USER_ID:")
 	require.Contains(t, rawSpecYaml, "default: 42")
 	require.Contains(t, rawSpecYaml, "default: tenant-token")

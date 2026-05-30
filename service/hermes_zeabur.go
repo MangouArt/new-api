@@ -255,6 +255,10 @@ func postZeaburGraphQL(ctx context.Context, token string, query string, variable
 }
 
 func renderHermesTenantTemplate(tenant *model.HermesTenant, newAPIBaseURL string, tenantToken string, adminToken string) string {
+	volumeName := strings.TrimSpace(tenant.VolumeName)
+	if volumeName == "" {
+		volumeName = fmt.Sprintf("%s-data", tenant.ServiceName)
+	}
 	return fmt.Sprintf(`# yaml-language-server: $schema=https://schema.zeabur.app/template.json
 apiVersion: zeabur.com/v1
 kind: Template
@@ -280,7 +284,7 @@ spec:
             port: 8642
             type: HTTP
         volumes:
-          - id: hermes-data
+          - id: %s
             dir: /opt/data
         env:
           HERMES_TENANT_ID:
@@ -315,5 +319,5 @@ spec:
             default: "true"
           HERMES_BACKEND_PORT:
             default: "8643"
-`, tenant.ServiceName, tenant.TenantID, tenant.UserID, newAPIBaseURL, tenantToken, newAPIBaseURL, tenantToken, adminToken)
+`, tenant.ServiceName, volumeName, tenant.TenantID, tenant.UserID, newAPIBaseURL, tenantToken, newAPIBaseURL, tenantToken, adminToken)
 }
