@@ -76,6 +76,8 @@ func TestDeployHermesTenantOnZeaburUsesRawTemplateMutation(t *testing.T) {
 	require.Contains(t, rawSpecYaml, "default: gpt-5.5")
 	require.Contains(t, rawSpecYaml, "HERMES_DEFAULT_PROVIDER:")
 	require.Contains(t, rawSpecYaml, "default: newapi")
+	require.Contains(t, rawSpecYaml, "HERMES_INFERENCE_PROVIDER:")
+	require.Contains(t, rawSpecYaml, "default: custom:newapi")
 	require.Contains(t, payloads[1].Query, "services(projectID: $projectID")
 	require.Equal(t, "project-id", payloads[1].Variables["projectID"])
 }

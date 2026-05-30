@@ -303,6 +303,8 @@ spec:
             default: gpt-5.5
           HERMES_DEFAULT_PROVIDER:
             default: newapi
+          HERMES_INFERENCE_PROVIDER:
+            default: custom:newapi
           HERMES_ADMIN_TOKEN:
             default: %s
           FEISHU_PAIRING_MODE:
