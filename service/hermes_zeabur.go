@@ -305,6 +305,8 @@ spec:
             default: newapi
           HERMES_INFERENCE_PROVIDER:
             default: custom:newapi
+          HERMES_NEWAPI_TRANSPORT:
+            default: responses
           HERMES_ADMIN_TOKEN:
             default: %s
           FEISHU_PAIRING_MODE:
