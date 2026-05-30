@@ -43,6 +43,7 @@ func TestDeployHermesTenantOnZeaburUsesRawTemplateMutation(t *testing.T) {
 	t.Setenv("ZEABUR_API_TOKEN", "test-zeabur-token")
 	t.Setenv("HERMES_ZEABUR_PROJECT_ID", "project-id")
 	t.Setenv("HERMES_ZEABUR_ENVIRONMENT_ID", "env-id")
+	t.Setenv("HERMES_TENANT_IMAGE", "ghcr.io/mangouart/hermes-tenant-runtime:test")
 
 	result, err := DeployHermesTenantOnZeabur(context.Background(), HermesTenantZeaburDeployRequest{
 		Tenant: &model.HermesTenant{
@@ -68,6 +69,11 @@ func TestDeployHermesTenantOnZeaburUsesRawTemplateMutation(t *testing.T) {
 	rawSpecYaml, ok := payloads[0].Variables["rawSpecYaml"].(string)
 	require.True(t, ok)
 	require.Contains(t, rawSpecYaml, "name: hermes-user-42")
+	require.Contains(t, rawSpecYaml, "template: PREBUILT_V2")
+	require.Contains(t, rawSpecYaml, "image: ghcr.io/mangouart/hermes-tenant-runtime:test")
+	require.NotContains(t, rawSpecYaml, "template: GIT")
+	require.NotContains(t, rawSpecYaml, "source: GITHUB")
+	require.NotContains(t, rawSpecYaml, "repo: 1247611351")
 	require.Contains(t, rawSpecYaml, "id: hermes-user-42-data")
 	require.NotContains(t, rawSpecYaml, "id: hermes-data")
 	require.Contains(t, rawSpecYaml, "NEWAPI_USER_ID:")

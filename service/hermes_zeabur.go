@@ -71,6 +71,10 @@ func HermesDashboardDomainSuffix() string {
 	return strings.Trim(strings.ToLower(strings.TrimSpace(os.Getenv("HERMES_DASHBOARD_DOMAIN_SUFFIX"))), ".")
 }
 
+func HermesTenantImage() string {
+	return strings.TrimSpace(os.Getenv("HERMES_TENANT_IMAGE"))
+}
+
 func HermesTenantPublicDashboardURL(tenant *model.HermesTenant) string {
 	suffix := HermesDashboardDomainSuffix()
 	if tenant == nil || strings.TrimSpace(tenant.ServiceName) == "" || suffix == "" {
@@ -86,6 +90,9 @@ func HermesZeaburConfig() HermesZeaburConfigStatus {
 	}
 	if strings.TrimSpace(os.Getenv("HERMES_ZEABUR_PROJECT_ID")) == "" && strings.TrimSpace(os.Getenv("ZEABUR_PROJECT_ID")) == "" {
 		missing = append(missing, "HERMES_ZEABUR_PROJECT_ID")
+	}
+	if HermesTenantImage() == "" {
+		missing = append(missing, "HERMES_TENANT_IMAGE")
 	}
 	return HermesZeaburConfigStatus{
 		Configured: len(missing) == 0,
@@ -119,10 +126,14 @@ func DeployHermesTenantOnZeabur(ctx context.Context, req HermesTenantZeaburDeplo
 	if strings.TrimSpace(req.TenantToken) == "" || strings.TrimSpace(req.AdminToken) == "" {
 		return nil, errors.New("tenant token and hermes admin token are required")
 	}
+	tenantImage := HermesTenantImage()
+	if tenantImage == "" {
+		return nil, errors.New("HERMES_TENANT_IMAGE is required")
+	}
 
 	variables := map[string]any{
 		"projectID":   projectID,
-		"rawSpecYaml": renderHermesTenantTemplate(req.Tenant, newAPIBaseURL, req.TenantToken, req.AdminToken),
+		"rawSpecYaml": renderHermesTenantTemplate(req.Tenant, tenantImage, newAPIBaseURL, req.TenantToken, req.AdminToken),
 	}
 
 	body, err := postZeaburGraphQL(ctx, apiToken, `mutation DeployHermesTenant($rawSpecYaml: String!, $projectID: ObjectID!) {
@@ -254,7 +265,7 @@ func postZeaburGraphQL(ctx context.Context, token string, query string, variable
 	return graphqlResp.Data, nil
 }
 
-func renderHermesTenantTemplate(tenant *model.HermesTenant, newAPIBaseURL string, tenantToken string, adminToken string) string {
+func renderHermesTenantTemplate(tenant *model.HermesTenant, tenantImage string, newAPIBaseURL string, tenantToken string, adminToken string) string {
 	volumeName := strings.TrimSpace(tenant.VolumeName)
 	if volumeName == "" {
 		volumeName = fmt.Sprintf("%s-data", tenant.ServiceName)
@@ -273,12 +284,10 @@ spec:
   services:
     - name: %s
       icon: https://raw.githubusercontent.com/zeabur/service-icons/main/marketplace/docker.svg
-      template: GIT
+      template: PREBUILT_V2
       spec:
         source:
-          source: GITHUB
-          repo: 1247611351
-          branch: main
+          image: %s
         ports:
           - id: http
             port: 8642
@@ -319,5 +328,5 @@ spec:
             default: "true"
           HERMES_BACKEND_PORT:
             default: "8643"
-`, tenant.ServiceName, volumeName, tenant.TenantID, tenant.UserID, newAPIBaseURL, tenantToken, newAPIBaseURL, tenantToken, adminToken)
+`, tenant.ServiceName, tenantImage, volumeName, tenant.TenantID, tenant.UserID, newAPIBaseURL, tenantToken, newAPIBaseURL, tenantToken, adminToken)
 }
