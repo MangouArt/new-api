@@ -1,13 +1,17 @@
 package controller
 
 import (
+	"errors"
+	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -39,6 +43,30 @@ func TestSettleTestQuotaUsesTieredBilling(t *testing.T) {
 	require.Equal(t, 1500, quota)
 	require.NotNil(t, result)
 	require.Equal(t, "stream", result.MatchedTier)
+}
+
+func TestShouldRetrySkipsAfterCodexChannelAffinityFailure(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.5","prompt_cache_key":"pc-root-cause"}`))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	_, found := service.GetPreferredChannelByAffinity(ctx, "gpt-5.5", "default")
+	require.False(t, found, "cache miss still records the matched codex affinity rule metadata")
+	require.True(t, service.ShouldSkipRetryAfterChannelAffinityFailure(ctx))
+
+	upstream401 := types.NewErrorWithStatusCode(errors.New("token invalidated"), types.ErrorCodeBadResponseStatusCode, http.StatusUnauthorized)
+	require.False(t, shouldRetry(ctx, upstream401, 1), "codex channel affinity is sticky and disables automatic fallback")
+}
+
+func TestShouldRetryRetriesUnauthorizedWithoutChannelAffinity(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	upstream401 := types.NewErrorWithStatusCode(errors.New("token invalidated"), types.ErrorCodeBadResponseStatusCode, http.StatusUnauthorized)
+
+	require.True(t, shouldRetry(ctx, upstream401, 1))
 }
 
 func TestBuildTestLogOtherInjectsTieredInfo(t *testing.T) {
