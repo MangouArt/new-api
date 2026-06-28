@@ -23,17 +23,20 @@ type HasImage interface {
 }
 
 func GetFullRequestURL(baseURL string, requestURL string, channelType int) string {
-	fullRequestURL := fmt.Sprintf("%s%s", baseURL, requestURL)
+	base := strings.TrimRight(baseURL, "/")
+	path := requestURL
 
-	if strings.HasPrefix(baseURL, "https://gateway.ai.cloudflare.com") {
+	if strings.HasPrefix(base, "https://gateway.ai.cloudflare.com") {
 		switch channelType {
 		case constant.ChannelTypeOpenAI:
-			fullRequestURL = fmt.Sprintf("%s%s", baseURL, strings.TrimPrefix(requestURL, "/v1"))
+			path = strings.TrimPrefix(path, "/v1")
 		case constant.ChannelTypeAzure:
-			fullRequestURL = fmt.Sprintf("%s%s", baseURL, strings.TrimPrefix(requestURL, "/openai/deployments"))
+			path = strings.TrimPrefix(path, "/openai/deployments")
 		}
+	} else if strings.HasSuffix(base, "/v1") && strings.HasPrefix(path, "/v1/") {
+		path = strings.TrimPrefix(path, "/v1")
 	}
-	return fullRequestURL
+	return fmt.Sprintf("%s%s", base, path)
 }
 
 func GetAPIVersion(c *gin.Context) string {

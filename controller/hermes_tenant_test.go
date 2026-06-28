@@ -21,6 +21,7 @@ import (
 
 func setupHermesTenantControllerTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
+	t.Setenv("HERMES_NEWAPI_BASE_URL", "")
 
 	gin.SetMode(gin.TestMode)
 	common.UsingSQLite = true
@@ -183,6 +184,7 @@ func TestAdminDeployHermesTenantByUserReusesExistingDeployment(t *testing.T) {
 func TestAdminGetHermesProvisioningConfigDoesNotLeakSecrets(t *testing.T) {
 	t.Setenv("ZEABUR_API_TOKEN", "secret-token")
 	t.Setenv("HERMES_ZEABUR_PROJECT_ID", "project-id")
+	t.Setenv("HERMES_TENANT_IMAGE", "ghcr.io/mangouart/hermes-tenant-runtime:test")
 
 	ctx, recorder := newAuthenticatedContext(t, http.MethodGet, "/api/hermes/tenants/provisioning/config", nil, 1)
 	AdminGetHermesProvisioningConfig(ctx)
