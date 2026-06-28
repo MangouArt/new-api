@@ -1060,6 +1060,16 @@ func defaultMangouProviderChannelSpecs() []mangouProviderChannelSpec {
 			Description: "Mangou BLTAI image provider",
 		},
 		{
+			Provider:    "foxcode",
+			TaskType:    "image",
+			Name:        mangouProviderChannelName("foxcode", "image"),
+			BaseURL:     strings.TrimRight(common.GetEnvOrDefaultString("FOX_OPENAI_BASE_URL", "https://dm-fox.rjj.cc/codex/v1"), "/"),
+			APIKey:      strings.TrimSpace(common.GetEnvOrDefaultString("FOX_OPENAI_API_KEY", "")),
+			Models:      []string{"gpt-image-2"},
+			Groups:      groups,
+			Description: "Mangou Foxcode image provider",
+		},
+		{
 			Provider:    "kie",
 			TaskType:    "video",
 			Name:        mangouProviderChannelName("kie", "video"),
@@ -1366,7 +1376,7 @@ func submitMangouUpstreamTask(req mangouAgentTaskRequest, channel *model.Channel
 		return nil, true, fmt.Errorf("NewAPI channel %d (%s) has no base_url configured", channel.Id, channel.Name)
 	}
 	switch req.Provider {
-	case "evolink", "bltai":
+	case "evolink", "bltai", "foxcode":
 		return submitMangouUnifiedTask(req, key, baseURL)
 	case "kie":
 		return submitMangouKIERunwayTask(req, key, baseURL)
@@ -1390,7 +1400,7 @@ func pollMangouUpstreamTask(task *model.Task) (*mangouUpstreamTaskResult, error)
 		return nil, fmt.Errorf("NewAPI channel %d (%s) is missing key or base_url", channel.Id, channel.Name)
 	}
 	switch provider {
-	case "evolink", "bltai":
+	case "evolink", "bltai", "foxcode":
 		return pollMangouUnifiedTask(provider, task.PrivateData.UpstreamTaskID, key, baseURL)
 	case "kie":
 		return pollMangouKIERunwayTask(task.PrivateData.UpstreamTaskID, key, baseURL)
@@ -1403,6 +1413,14 @@ func submitMangouUnifiedTask(req mangouAgentTaskRequest, key string, baseURL str
 	payload := map[string]any{}
 	for k, v := range req.Params {
 		payload[k] = v
+	}
+	if req.Type == "image" && req.Provider == "foxcode" {
+		if _, exists := payload["size"]; !exists {
+			if imageSize, imageSizeExists := payload["image_size"]; imageSizeExists {
+				payload["size"] = imageSize
+			}
+		}
+		delete(payload, "image_size")
 	}
 	payload["model"] = req.Model
 	payload["prompt"] = req.Prompt
