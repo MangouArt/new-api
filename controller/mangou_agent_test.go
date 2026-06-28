@@ -30,6 +30,7 @@ func setupMangouAgentTestDB(t *testing.T) *gorm.DB {
 	common.UsingMySQL = false
 	common.UsingPostgreSQL = false
 	common.RedisEnabled = false
+	common.MemoryCacheEnabled = false
 	common.BatchUpdateEnabled = false
 	model.InitSQLColumnNames()
 
@@ -697,6 +698,7 @@ func TestMangouAdminSyncProvidersCreatesChannelsAbilitiesAndModels(t *testing.T)
 	db := setupMangouAgentTestDB(t)
 	t.Setenv("BLTAI_API_KEY", "test-bltai-key")
 	t.Setenv("BLTAI_BASE_URL", "https://example.test/v1")
+	t.Setenv("FOX_OPENAI_API_KEY", "test-foxcode-key")
 
 	ctx, recorder := newMangouJSONContext(t, http.MethodPost, "/api/mangou/providers/sync", nil)
 
@@ -719,6 +721,16 @@ func TestMangouAdminSyncProvidersCreatesChannelsAbilitiesAndModels(t *testing.T)
 	var meta model.Model
 	require.NoError(t, db.Where("model_name = ?", "gpt-image-2").First(&meta).Error)
 	require.Equal(t, 0, meta.SyncOfficial)
+
+	var foxcodeChannel model.Channel
+	require.NoError(t, db.Where("name = ?", "Mangou FOXCODE image").First(&foxcodeChannel).Error)
+	require.Equal(t, "test-foxcode-key", foxcodeChannel.Key)
+	require.Equal(t, "https://dm-fox.rjj.cc/codex/v1", *foxcodeChannel.BaseURL)
+	require.Contains(t, foxcodeChannel.Models, "gpt-image-2")
+	require.Contains(t, foxcodeChannel.Group, "auto")
+	require.Contains(t, foxcodeChannel.Group, "default")
+	var foxcodeAbility model.Ability
+	require.NoError(t, db.Where("channel_id = ? AND model = ? AND `group` = ?", foxcodeChannel.Id, "gpt-image-2", "default").First(&foxcodeAbility).Error)
 }
 
 func TestMangouProviderPricingUsesDatabaseOnly(t *testing.T) {
@@ -902,6 +914,56 @@ func TestMangouAgentSubmitTaskAcceptsOpenAICompatibleImageResponse(t *testing.T)
 	require.EqualValues(t, model.TaskStatusSuccess, task.Status)
 	require.Equal(t, "100%", task.Progress)
 	require.Equal(t, "https://cdn.example/sync-image.jpg", task.PrivateData.ResultURL)
+}
+
+func TestMangouAgentSubmitTaskAcceptsFoxcodeOpenAICompatibleImageResponse(t *testing.T) {
+	db := setupMangouAgentTestDB(t)
+	seedMangouPricing(t, db, "foxcode", "image", 100, "")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "Bearer test-foxcode-key", r.Header.Get("Authorization"))
+		require.Equal(t, "/codex/v1/images/generations", r.URL.Path)
+		require.Equal(t, http.MethodPost, r.Method)
+		var payload map[string]any
+		require.NoError(t, common.DecodeJson(r.Body, &payload))
+		require.Equal(t, "gpt-image-2", payload["model"])
+		require.Equal(t, "A mango robot.", payload["prompt"])
+		require.Equal(t, "1024x1024", payload["size"])
+		require.NotContains(t, payload, "image_size")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"created":1777821713,"data":[{"url":"https://cdn.example/foxcode-image.png"}],"model":"gpt-image-2"}`))
+	}))
+	defer server.Close()
+	seedMangouChannel(t, db, "foxcode", "image", server.URL+"/codex/v1", "test-foxcode-key", []string{"default"}, []string{"gpt-image-2"})
+
+	user := model.User{Username: "agentuser", Role: common.RoleCommonUser, Status: common.UserStatusEnabled, Quota: 1000, Group: "default"}
+	require.NoError(t, db.Create(&user).Error)
+
+	ctx, recorder := newMangouJSONContext(t, http.MethodPost, "/v1/agent/tasks", map[string]any{
+		"type":     "image",
+		"provider": "foxcode",
+		"model":    "gpt-image-2",
+		"prompt":   "A mango robot.",
+		"params": map[string]any{
+			"image_size": "1024x1024",
+		},
+	})
+	ctx.Set("id", user.Id)
+	ctx.Set("token_unlimited_quota", true)
+	ctx.Set("group", "default")
+
+	MangouAgentSubmitTask(ctx)
+	require.Equal(t, http.StatusOK, recorder.Code)
+	resp := decodeMangouResponse(t, recorder)
+	require.Equal(t, true, resp["success"])
+	data := resp["data"].(map[string]any)
+
+	var task model.Task
+	require.NoError(t, db.Where("task_id = ?", data["task_id"]).First(&task).Error)
+	require.Empty(t, task.PrivateData.UpstreamTaskID)
+	require.EqualValues(t, model.TaskStatusSuccess, task.Status)
+	require.Equal(t, "100%", task.Progress)
+	require.Equal(t, "https://cdn.example/foxcode-image.png", task.PrivateData.ResultURL)
 }
 
 func TestMangouAgentSubmitTaskSubmitsKIERunwayVideoTask(t *testing.T) {
