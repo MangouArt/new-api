@@ -45,7 +45,7 @@ func TestSettleTestQuotaUsesTieredBilling(t *testing.T) {
 	require.Equal(t, "stream", result.MatchedTier)
 }
 
-func TestShouldRetrySkipsAfterCodexChannelAffinityFailure(t *testing.T) {
+func TestShouldRetryAllowsFallbackForCodexChannelAffinityAuthFailure(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
@@ -56,8 +56,23 @@ func TestShouldRetrySkipsAfterCodexChannelAffinityFailure(t *testing.T) {
 	require.False(t, found, "cache miss still records the matched codex affinity rule metadata")
 	require.True(t, service.ShouldSkipRetryAfterChannelAffinityFailure(ctx))
 
-	upstream401 := types.NewErrorWithStatusCode(errors.New("token invalidated"), types.ErrorCodeBadResponseStatusCode, http.StatusUnauthorized)
-	require.False(t, shouldRetry(ctx, upstream401, 1), "codex channel affinity is sticky and disables automatic fallback")
+	upstream401 := types.NewErrorWithStatusCode(errors.New("token_expired"), types.ErrorCodeBadResponseStatusCode, http.StatusUnauthorized)
+	require.True(t, shouldRetry(ctx, upstream401, 1), "upstream auth failures must fallback even when codex affinity is sticky")
+}
+
+func TestShouldRetrySkipsNonAuthFailureAfterCodexChannelAffinity(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.5","prompt_cache_key":"pc-root-cause"}`))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	_, found := service.GetPreferredChannelByAffinity(ctx, "gpt-5.5", "default")
+	require.False(t, found, "cache miss still records the matched codex affinity rule metadata")
+	require.True(t, service.ShouldSkipRetryAfterChannelAffinityFailure(ctx))
+
+	upstream500 := types.NewErrorWithStatusCode(errors.New("upstream unavailable"), types.ErrorCodeBadResponseStatusCode, http.StatusInternalServerError)
+	require.False(t, shouldRetry(ctx, upstream500, 1), "non-auth failures should preserve sticky codex affinity behavior")
 }
 
 func TestShouldRetryRetriesUnauthorizedWithoutChannelAffinity(t *testing.T) {

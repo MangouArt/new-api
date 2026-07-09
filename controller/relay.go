@@ -315,11 +315,21 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 	return channel, nil
 }
 
+func shouldBypassChannelAffinitySkipRetry(openaiErr *types.NewAPIError) bool {
+	if openaiErr == nil {
+		return false
+	}
+	// Sticky channel affinity protects prompt-cache locality for normal failures, but
+	// upstream authentication failures are channel-local and must be allowed to
+	// fall back to another configured channel such as Foxcode.
+	return openaiErr.StatusCode == http.StatusUnauthorized
+}
+
 func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) bool {
 	if openaiErr == nil {
 		return false
 	}
-	if service.ShouldSkipRetryAfterChannelAffinityFailure(c) {
+	if service.ShouldSkipRetryAfterChannelAffinityFailure(c) && !shouldBypassChannelAffinitySkipRetry(openaiErr) {
 		return false
 	}
 	if types.IsChannelError(openaiErr) {
